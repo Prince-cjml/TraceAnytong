@@ -10,7 +10,7 @@ export function leaseIsActive(leaseOwner: string | undefined, leaseExpiresAt: nu
   return leaseOwner === workerId && leaseExpiresAt !== undefined && leaseExpiresAt > now;
 }
 
-export function completionDisposition(state: string, previousOutputStorageId: string | undefined, nextOutputStorageId: string): "complete" | "idempotent" | "conflict" {
+export function completionDisposition(state: string, previousOutputStorageId: string | undefined, nextOutputStorageId: string | undefined): "complete" | "idempotent" | "conflict" {
   if (state !== "succeeded") return "complete";
   return previousOutputStorageId === nextOutputStorageId ? "idempotent" : "conflict";
 }

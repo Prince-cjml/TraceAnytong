@@ -76,6 +76,20 @@ export const getWorkerInput = mutation({
     const inputUrl = job.inputStorageId ? await ctx.storage.getUrl(job.inputStorageId) : null;
     if (job.type !== "web_tile" && !inputUrl) throw new Error("INPUT_NOT_FOUND");
     if (job.type === "web_tile" && !webSession) throw new Error("WEB_SESSION_NOT_FOUND");
+    const issuances = traceCase
+      ? await ctx.db.query("issuances").withIndex("by_org_profile", (q) => q.eq("orgId", traceCase.orgId).eq("profileId", job.profileId)).take(100)
+      : [];
+    const candidates = await Promise.all(issuances
+      .filter((candidate) => candidate.status === "ready" && candidate.wmCode !== undefined)
+      .map(async (candidate) => {
+        const candidateJob = candidate.jobId ? await ctx.db.get(candidate.jobId) : null;
+        return {
+          issuanceId: candidate._id,
+          traceHandle: candidate.traceHandle,
+          wmCode: candidate.wmCode,
+          outputSha256: candidateJob?.result?.outputSha256 ?? null,
+        };
+      }));
     return {
       inputUrl,
       mime: version?.mime ?? traceCase?.evidenceMime ?? "image/png",
@@ -90,6 +104,7 @@ export const getWorkerInput = mutation({
       scope: issuance ? "issuance" : webSession ? "web_session" : null,
       issuanceId: job.issuanceId ?? null,
       caseId: job.caseId ?? null,
+      candidates,
     };
   },
 });
@@ -106,7 +121,7 @@ export const heartbeat = mutation({
 });
 
 export const complete = mutation({
-  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), outputStorageId: v.id("_storage"), outputSha256: v.string(), result: v.any() },
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), outputStorageId: v.optional(v.id("_storage")), outputSha256: v.optional(v.string()), result: v.any() },
   handler: async (ctx, args) => {
     requireWorker(args.workerToken);
     const job = await ctx.db.get(args.jobId);
@@ -117,8 +132,14 @@ export const complete = mutation({
     const now = Date.now();
     if (job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
     await ctx.db.patch(args.jobId, { state: "succeeded", outputStorageId: args.outputStorageId, result: { ...args.result, outputSha256: args.outputSha256 }, leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now });
-    if (job.issuanceId) await ctx.db.patch(job.issuanceId, { status: "ready", derivedStorageId: args.outputStorageId });
-    if (job.webSessionId) await ctx.db.patch(job.webSessionId, { tileStorageId: args.outputStorageId, lastSeenAt: now });
+    if (job.issuanceId) {
+      if (!args.outputStorageId) throw new Error("ISSUANCE_OUTPUT_REQUIRED");
+      await ctx.db.patch(job.issuanceId, { status: "ready", derivedStorageId: args.outputStorageId });
+    }
+    if (job.webSessionId) {
+      if (!args.outputStorageId) throw new Error("WEB_TILE_OUTPUT_REQUIRED");
+      await ctx.db.patch(job.webSessionId, { tileStorageId: args.outputStorageId, lastSeenAt: now });
+    }
     return { status: "succeeded" as const };
   },
 });

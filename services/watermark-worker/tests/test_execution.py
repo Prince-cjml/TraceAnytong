@@ -2,7 +2,7 @@ import base64
 import hashlib
 import io
 
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from app.control_plane import ClaimedJob
 from app.errors import InputDownloadError, LeaseLostError
@@ -13,6 +13,15 @@ def png_bytes() -> bytes:
     image = Image.new("RGB", (160, 100), (120, 150, 180))
     out = io.BytesIO()
     image.save(out, "PNG")
+    return out.getvalue()
+
+
+def watermarked_png(wm_code: int) -> bytes:
+    image = Image.new("RGB", (160, 100), (120, 150, 180))
+    out = io.BytesIO()
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("TraceAnytong-wmCode", str(wm_code))
+    image.save(out, "PNG", pnginfo=metadata)
     return out.getvalue()
 
 
@@ -36,6 +45,8 @@ class FakeClient:
         self.calls: list[str] = []
         self.completed: dict | None = None
         self.failed: tuple[str, bool] | None = None
+        self.trace_candidates: list[dict] = []
+        self.completed_cases: list[str] = []
         self.job = ClaimedJob("jobs:1", "key", "personalize", "storage:1", "image-v1", 9_999_999)
 
     def claim(self, worker_id: str, capabilities: list[str]):
@@ -87,6 +98,16 @@ class FakeClient:
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None:
         self.calls.append("fail")
         self.failed = (error, retryable)
+
+    def record_trace_candidate(self, args: dict) -> dict:
+        self.calls.append("record-candidate")
+        self.trace_candidates.append(args)
+        return {"candidateId": "candidates:1", "decision": "attributed"}
+
+    def complete_trace_case(self, case_id: str, failed: bool = False) -> None:
+        assert not failed
+        self.calls.append("complete-case")
+        self.completed_cases.append(case_id)
 
 
 def runner_for(client: FakeClient, env: dict[str, str] | None = None) -> JobRunner:
@@ -181,3 +202,52 @@ def test_web_tile_job_uploads_a_png_without_downloading_document_bytes() -> None
     assert "download" not in client.calls
     assert client.completed is not None
     assert client.completed["result"]["outputMime"] == "image/png"
+
+
+def test_trace_job_records_only_a_unique_server_resolved_code_match() -> None:
+    env = environment()
+    source = watermarked_png(42)
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace", "trace-key", "trace", "storage:evidence", "image-v1", 9_999_999, case_id="cases:1")
+    original_input = client.input
+
+    def trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:1",
+            "candidates": [{"issuanceId": "issuances:1", "traceHandle": "0123456789abcdef0123456789abcdef", "wmCode": 42, "outputSha256": hashlib.sha256(source).hexdigest()}],
+        })
+        return payload
+
+    client.input = trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["issuanceId"] == "issuances:1"
+    assert client.trace_candidates[0]["fingerprintScore"] == 1.0
+    assert client.completed_cases == ["cases:1"]
+    assert client.completed is not None
+    assert client.completed["storageId"] is None
+
+
+def test_trace_job_never_requests_attribution_from_metadata_only_recovery() -> None:
+    env = environment()
+    source = watermarked_png(42)
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace", "trace-key", "trace", "storage:evidence", "image-v1", 9_999_999, case_id="cases:1")
+    original_input = client.input
+
+    def transformed_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:1",
+            "candidates": [{"issuanceId": "issuances:1", "traceHandle": "0123456789abcdef0123456789abcdef", "wmCode": 42, "outputSha256": "0" * 64}],
+        })
+        return payload
+
+    client.input = transformed_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["fingerprintScore"] == 0.0
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"

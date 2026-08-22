@@ -46,7 +46,8 @@ export default defineSchema({
     jobId: v.optional(v.id("jobs")), status: v.union(v.literal("queued"), v.literal("processing"), v.literal("ready"), v.literal("failed")),
     issuedAt: v.number(), downloadedAt: v.optional(v.number()),
   }).index("by_traceHandle", ["traceHandle"]).index("by_wmCode", ["wmCode"])
-    .index("by_version_user", ["versionId", "userId"]).index("by_version_time", ["versionId", "issuedAt"]),
+    .index("by_version_user", ["versionId", "userId"]).index("by_version_time", ["versionId", "issuedAt"])
+    .index("by_org_profile", ["orgId", "profileId"]),
   webSessions: defineTable({
     orgId: v.id("organizations"), userId: v.id("users"), traceHandle: v.string(), routeScope: v.string(), profileId: v.string(),
     epoch: v.number(), startedAt: v.number(), expiresAt: v.number(), lastSeenAt: v.number(), tileStorageId: v.optional(v.id("_storage")),

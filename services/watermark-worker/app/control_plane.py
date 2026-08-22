@@ -105,8 +105,19 @@ class ConvexWorkerClient:
             raise OutputUploadError("upload response did not contain a storage ID")
         return storage_id
 
-    def complete(self, worker_id: str, job_id: str, output_storage_id: str, output_sha256: str, result: dict[str, Any]) -> dict[str, Any]:
-        return self._mutation("jobs:complete", {"workerId": worker_id, "jobId": job_id, "outputStorageId": output_storage_id, "outputSha256": output_sha256, "result": result})
+    def complete(self, worker_id: str, job_id: str, output_storage_id: str | None, output_sha256: str | None, result: dict[str, Any]) -> dict[str, Any]:
+        args: dict[str, Any] = {"workerId": worker_id, "jobId": job_id, "result": result}
+        if output_storage_id is not None:
+            args["outputStorageId"] = output_storage_id
+        if output_sha256 is not None:
+            args["outputSha256"] = output_sha256
+        return self._mutation("jobs:complete", args)
+
+    def record_trace_candidate(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self._mutation("traceCases:recordCandidate", args)
+
+    def complete_trace_case(self, case_id: str, failed: bool = False) -> None:
+        self._mutation("traceCases:complete", {"caseId": case_id, "failed": failed})
 
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None:
         self._mutation("jobs:fail", {"workerId": worker_id, "jobId": job_id, "error": error, "retryable": retryable})

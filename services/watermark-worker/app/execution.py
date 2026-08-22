@@ -16,6 +16,7 @@ from typing import Literal, Mapping, Protocol
 
 from .control_plane import ClaimedJob, ConvexWorkerClient
 from .carriers.screen_tile import ScreenTileCarrier
+from .carriers.image_code import ImageCodeCarrier
 from .errors import (
     ControlPlaneError,
     InputIntegrityError,
@@ -36,7 +37,9 @@ class WorkerClient(Protocol):
     def download_input(self, input_url: str) -> bytes: ...
     def create_upload_url(self) -> str: ...
     def upload_output(self, upload_url: str, data: bytes, mime_type: str) -> str: ...
-    def complete(self, worker_id: str, job_id: str, output_storage_id: str, output_sha256: str, result: dict) -> dict: ...
+    def complete(self, worker_id: str, job_id: str, output_storage_id: str | None, output_sha256: str | None, result: dict) -> dict: ...
+    def record_trace_candidate(self, args: dict) -> dict: ...
+    def complete_trace_case(self, case_id: str, failed: bool = False) -> None: ...
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None: ...
 
 
@@ -220,6 +223,45 @@ class JobRunner:
         self.client.complete(self.settings.worker_id, job.job_id, output_storage_id, output_sha, self._web_tile_result(data, profile))
         return RunOutcome("succeeded", job.job_id)
 
+    def _complete_trace(self, job: ClaimedJob, payload: dict, profile: CarrierProfile) -> RunOutcome:
+        input_url, mime, case_id = payload.get("inputUrl"), payload.get("mime"), payload.get("caseId")
+        if not isinstance(input_url, str) or not isinstance(mime, str) or not isinstance(case_id, str):
+            raise InputIntegrityError("trace job input is incomplete")
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        evidence_bytes = self.client.download_input(input_url)
+        expected_sha = payload.get("inputSha256")
+        actual_sha = hashlib.sha256(evidence_bytes).hexdigest()
+        if expected_sha is not None and expected_sha != actual_sha:
+            raise InputIntegrityError("trace evidence SHA-256 does not match the stored case")
+        if not mime.startswith("image/"):
+            raise InputIntegrityError("deterministic trace worker currently supports image evidence")
+        evidence = ImageCodeCarrier().detect(Artifact(evidence_bytes, mime), profile)
+        observed_code = evidence.raw.get("wmCode")
+        matches = [candidate for candidate in payload.get("candidates", []) if candidate.get("wmCode") == observed_code]
+        if isinstance(observed_code, int) and len(matches) == 1:
+            candidate = matches[0]
+            fingerprint_score = 1.0 if candidate.get("outputSha256") == actual_sha else 0.0
+            exact_output = fingerprint_score == 1.0
+            self.client.record_trace_candidate({
+                "caseId": case_id, "traceHandle": candidate["traceHandle"], "issuanceId": candidate["issuanceId"],
+                "watermarkScore": evidence.score, "watermarkMargin": 1.0, "fingerprintScore": fingerprint_score,
+                "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
+                "finalConfidence": 1.0 if exact_output else 0.0,
+                "requestedDecision": "attributed" if exact_output else "insufficient",
+                "explanation": "Unique server-mapped image code and exact derived fingerprint recovered from supplied evidence." if exact_output else "Image code recovered, but the deterministic fallback requires an exact derived fingerprint before attribution.",
+                "rawEvidence": {"imageCarrier": asdict(evidence), "candidateCount": len(payload.get("candidates", [])), "evidenceSha256": actual_sha},
+                "rank": 1, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
+                "carrierVersion": ImageCodeCarrier.carrier_version, "detectorVersion": evidence.detector_version,
+                "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
+                "modelVersion": "deterministic-fallback-v1", "workerVersion": self.settings.worker_version,
+            })
+        self.client.complete_trace_case(case_id)
+        self.client.complete(self.settings.worker_id, job.job_id, None, None, {
+            "workerVersion": self.settings.worker_version, "candidateCount": len(matches), "evidenceSha256": actual_sha,
+            "detectorVersion": ImageCodeCarrier.detector_version,
+        })
+        return RunOutcome("succeeded", job.job_id)
+
     def _fail(self, job: ClaimedJob, error: WorkerError) -> RunOutcome:
         try:
             self.client.fail(self.settings.worker_id, job.job_id, error.code, error.retryable)
@@ -235,16 +277,21 @@ class JobRunner:
         if job is None:
             return RunOutcome("idle")
         try:
-            if job.type not in {"personalize", "web_tile"}:
+            if job.type not in {"personalize", "web_tile", "trace"}:
                 raise InputIntegrityError("worker does not support this job type", details={"type": job.type})
             self.client.start(self.settings.worker_id, job.job_id)
             payload = self.client.input(self.settings.worker_id, job.job_id)
             if payload.get("profileId") != job.profile_id:
                 raise InputIntegrityError("leased job profile does not match claimed profile")
-            identity = self._identity(payload)
-            profile = self.settings.profile_for(job.profile_id, identity.profile_version, self._env)
+            profile_version = payload.get("profileVersion")
+            if not isinstance(profile_version, str):
+                raise InputIntegrityError("leased job is missing immutable profile version")
+            profile = self.settings.profile_for(job.profile_id, profile_version, self._env)
             if job.type == "web_tile":
                 return self._complete_web_tile(job, payload, profile)
+            if job.type == "trace":
+                return self._complete_trace(job, payload, profile)
+            identity = self._identity(payload)
             input_url = payload.get("inputUrl")
             mime = payload.get("mime")
             if not isinstance(input_url, str) or not isinstance(mime, str):

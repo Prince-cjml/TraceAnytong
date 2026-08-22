@@ -7,12 +7,17 @@ import { assertEvidenceScores, assertRawEvidence, assertTraceHandle, parseTraceT
 
 const decision = v.union(v.literal("attributed"), v.literal("insufficient"), v.literal("no_match"));
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function assertSha256(value: string): void {
   if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("INVALID_SHA256");
 }
 
 export const create = mutation({
-  args: { evidenceStorageId: v.id("_storage"), evidenceSha256: v.string(), evidenceMime: v.string(), suspectedDocumentId: v.optional(v.id("documents")), protocolVersion: v.string(), detectorVersion: v.string(), fingerprintVersion: v.string() },
+  args: { evidenceStorageId: v.id("_storage"), evidenceSha256: v.string(), evidenceMime: v.string(), profileId: v.string(), suspectedDocumentId: v.optional(v.id("documents")), protocolVersion: v.string(), detectorVersion: v.string(), fingerprintVersion: v.string() },
   handler: async (ctx, args) => {
     assertSha256(args.evidenceSha256);
     const reporter = await requireRole(ctx, ["investigator", "admin"]);
@@ -21,7 +26,17 @@ export const create = mutation({
       if (!document) throw new Error("NOT_FOUND");
       sameOrganization(document.orgId, reporter);
     }
-    const caseId = await ctx.db.insert("traceCases", { ...args, orgId: reporter.orgId, reporterId: reporter._id, state: "queued", createdAt: Date.now() });
+    const profile = await ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", args.profileId)).unique();
+    if (!profile || profile.status !== "active") throw new Error("INVALID_PROFILE");
+    if (profile.protocolVersion !== args.protocolVersion) throw new Error("PROFILE_PROTOCOL_MISMATCH");
+    const now = Date.now();
+    const { profileId: _profileId, ...caseArgs } = args;
+    const caseId = await ctx.db.insert("traceCases", { ...caseArgs, orgId: reporter.orgId, reporterId: reporter._id, state: "queued", createdAt: now });
+    await ctx.db.insert("jobs", {
+      orgId: reporter.orgId, jobKey: await sha256Hex(`trace|${caseId}|${args.profileId}`), type: "trace",
+      inputStorageId: args.evidenceStorageId, caseId, profileId: args.profileId, workerClass: "cpu",
+      state: "queued", nextAttemptAt: now, attempts: 0, createdAt: now, updatedAt: now,
+    });
     await writeAuditEvent(ctx, { orgId: reporter.orgId, actorId: reporter._id, action: "trace_case.created", entityType: "traceCase", entityId: caseId, detailsHash: args.evidenceSha256 });
     return caseId;
   },
