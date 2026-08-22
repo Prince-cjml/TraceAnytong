@@ -131,12 +131,16 @@ class FakeClient:
         self.calls.append("fail")
         self.failed = (error, retryable)
 
-    def record_trace_candidate(self, args: dict) -> dict:
+    def record_trace_candidate(self, worker_id: str, job_id: str, args: dict) -> dict:
         self.calls.append("record-candidate")
+        assert worker_id == "test-worker"
+        assert job_id == self.job.job_id
         self.trace_candidates.append(args)
         return {"candidateId": "candidates:1", "decision": "attributed"}
 
-    def complete_trace_case(self, case_id: str, failed: bool = False) -> None:
+    def complete_trace_case(self, worker_id: str, job_id: str, case_id: str, failed: bool = False) -> None:
+        assert worker_id == "test-worker"
+        assert job_id == self.job.job_id
         assert not failed
         self.calls.append("complete-case")
         self.completed_cases.append(case_id)

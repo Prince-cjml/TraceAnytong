@@ -113,11 +113,11 @@ class ConvexWorkerClient:
             args["outputSha256"] = output_sha256
         return self._mutation("jobs:complete", args)
 
-    def record_trace_candidate(self, args: dict[str, Any]) -> dict[str, Any]:
-        return self._mutation("traceCases:recordCandidate", args)
+    def record_trace_candidate(self, worker_id: str, job_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        return self._mutation("traceCases:recordCandidate", {"workerId": worker_id, "jobId": job_id, **args})
 
-    def complete_trace_case(self, case_id: str, failed: bool = False) -> None:
-        self._mutation("traceCases:complete", {"caseId": case_id, "failed": failed})
+    def complete_trace_case(self, worker_id: str, job_id: str, case_id: str, failed: bool = False) -> None:
+        self._mutation("traceCases:complete", {"workerId": worker_id, "jobId": job_id, "caseId": case_id, "failed": failed})
 
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None:
         self._mutation("jobs:fail", {"workerId": worker_id, "jobId": job_id, "error": error, "retryable": retryable})

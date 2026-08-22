@@ -4,6 +4,7 @@ import { requireRole, sameOrganization } from "./auth";
 import { writeAuditEvent } from "./audit";
 import { requireWorker } from "./workerAuth";
 import { assertEvidenceScores, assertRawEvidence, assertTraceHandle, parseTraceThresholds, resolveTraceDecision } from "./traceDecisionRules";
+import { leaseIsActive } from "./jobRules";
 
 const decision = v.union(v.literal("attributed"), v.literal("insufficient"), v.literal("no_match"));
 
@@ -14,6 +15,13 @@ async function sha256Hex(value: string): Promise<string> {
 
 function assertSha256(value: string): void {
   if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("INVALID_SHA256");
+}
+
+async function requireActiveTraceLease(ctx: any, workerId: string, jobId: any, caseId: any): Promise<void> {
+  const job = await ctx.db.get(jobId);
+  if (!job || job.type !== "trace" || job.caseId !== caseId || job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, workerId, Date.now())) {
+    throw new Error("TRACE_JOB_LEASE_NOT_ACTIVE");
+  }
 }
 
 export const create = mutation({
@@ -45,7 +53,7 @@ export const create = mutation({
 /** Workers submit the uncollapsed evidence vector; the server refuses ambiguous attribution. */
 export const recordCandidate = mutation({
   args: {
-    workerToken: v.string(), caseId: v.id("traceCases"), traceHandle: v.string(), issuanceId: v.optional(v.id("issuances")), webSessionId: v.optional(v.id("webSessions")),
+    workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), caseId: v.id("traceCases"), traceHandle: v.string(), issuanceId: v.optional(v.id("issuances")), webSessionId: v.optional(v.id("webSessions")),
     watermarkScore: v.number(), watermarkMargin: v.number(), fingerprintScore: v.number(), geometricScore: v.number(), structureScore: v.number(), timelineScore: v.number(),
     finalConfidence: v.number(), requestedDecision: decision, explanation: v.string(), rawEvidence: v.any(), rank: v.number(),
     protocolVersion: v.string(), profileVersion: v.string(), carrierVersion: v.string(), detectorVersion: v.string(), fingerprintVersion: v.string(), keyVersion: v.string(),
@@ -53,6 +61,7 @@ export const recordCandidate = mutation({
   },
   handler: async (ctx, args) => {
     requireWorker(args.workerToken);
+    await requireActiveTraceLease(ctx, args.workerId, args.jobId, args.caseId);
     const traceCase = await ctx.db.get(args.caseId);
     if (!traceCase) throw new Error("NOT_FOUND");
     assertTraceHandle(args.traceHandle);
@@ -91,9 +100,10 @@ export const recordCandidate = mutation({
 });
 
 export const complete = mutation({
-  args: { workerToken: v.string(), caseId: v.id("traceCases"), failed: v.optional(v.boolean()) },
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), caseId: v.id("traceCases"), failed: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     requireWorker(args.workerToken);
+    await requireActiveTraceLease(ctx, args.workerId, args.jobId, args.caseId);
     const traceCase = await ctx.db.get(args.caseId);
     if (!traceCase) throw new Error("NOT_FOUND");
     await ctx.db.patch(args.caseId, { state: args.failed ? "failed" : "complete", completedAt: Date.now() });

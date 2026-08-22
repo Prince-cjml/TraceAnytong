@@ -41,8 +41,8 @@ class WorkerClient(Protocol):
     def create_upload_url(self) -> str: ...
     def upload_output(self, upload_url: str, data: bytes, mime_type: str) -> str: ...
     def complete(self, worker_id: str, job_id: str, output_storage_id: str | None, output_sha256: str | None, result: dict) -> dict: ...
-    def record_trace_candidate(self, args: dict) -> dict: ...
-    def complete_trace_case(self, case_id: str, failed: bool = False) -> None: ...
+    def record_trace_candidate(self, worker_id: str, job_id: str, args: dict) -> dict: ...
+    def complete_trace_case(self, worker_id: str, job_id: str, case_id: str, failed: bool = False) -> None: ...
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None: ...
 
 
@@ -266,7 +266,7 @@ class JobRunner:
                 candidate_margin = max(0.0, evidence.score - runner_up_score)
                 phase_margin = float(evidence.raw["margin"])
                 is_clear = evidence.score >= 0.9 and candidate_margin >= 0.05 and phase_margin >= 0.01
-                self.client.record_trace_candidate({
+                self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
                     "caseId": case_id, "traceHandle": candidate["traceHandle"], "webSessionId": candidate["webSessionId"],
                     "watermarkScore": evidence.score, "watermarkMargin": candidate_margin, "fingerprintScore": 0.0,
                     "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
@@ -289,7 +289,7 @@ class JobRunner:
                     raise InputIntegrityError("image trace candidate is missing issuance provenance")
                 fingerprint_score = 1.0 if candidate.get("outputSha256") == actual_sha else 0.0
                 exact_output = fingerprint_score == 1.0
-                self.client.record_trace_candidate({
+                self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
                     "caseId": case_id, "traceHandle": candidate["traceHandle"], "issuanceId": candidate["issuanceId"],
                     "watermarkScore": evidence.score, "watermarkMargin": 1.0, "fingerprintScore": fingerprint_score,
                     "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
@@ -321,7 +321,7 @@ class JobRunner:
             for rank, match in enumerate(structure_matches, start=1):
                 candidate = candidate_by_identity[(match["traceHandle"], match["scope"])]
                 provenance = {"issuanceId": candidate["issuanceId"]} if isinstance(candidate.get("issuanceId"), str) else {"webSessionId": candidate["webSessionId"]}
-                self.client.record_trace_candidate({
+                self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
                     "caseId": case_id, "traceHandle": match["traceHandle"], **provenance,
                     "watermarkScore": 0.0, "watermarkMargin": 0.0,
                     "fingerprintScore": 1.0 if candidate.get("outputSha256") == actual_sha else 0.0,
@@ -335,7 +335,7 @@ class JobRunner:
                     "workerVersion": self.settings.worker_version,
                 })
             matches = structure_matches
-        self.client.complete_trace_case(case_id)
+        self.client.complete_trace_case(self.settings.worker_id, job.job_id, case_id)
         self.client.complete(self.settings.worker_id, job.job_id, None, None, {
             "workerVersion": self.settings.worker_version, "candidateCount": len(matches), "evidenceSha256": actual_sha,
             "detectorVersion": evidence.detector_version,

@@ -174,6 +174,7 @@ export const fail = mutation({
       lastError: args.error, leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now,
     });
     if (job.issuanceId && !shouldRetry) await ctx.db.patch(job.issuanceId, { status: "failed" });
+    if (job.caseId && !shouldRetry) await ctx.db.patch(job.caseId, { state: "failed", completedAt: now });
   },
 });
 

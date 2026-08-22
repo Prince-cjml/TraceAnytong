@@ -68,3 +68,20 @@ def test_upload_response_without_storage_id_remains_typed() -> None:
     )
     with pytest.raises(OutputUploadError):
         client.upload_output("https://upload.example/direct", b"derived bytes", "image/png")
+
+
+def test_trace_writes_bind_worker_and_active_job_identifiers() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "success", "value": {}})
+
+    client = ConvexWorkerClient("https://joyous-anaconda-773.convex.cloud", "test-token", httpx.Client(transport=httpx.MockTransport(handler)))
+    client.record_trace_candidate("worker-a", "jobs:trace", {"caseId": "cases:1", "traceHandle": "0123456789abcdef0123456789abcdef"})
+    client.complete_trace_case("worker-a", "jobs:trace", "cases:1")
+
+    assert b'"workerId":"worker-a"' in requests[0].content
+    assert b'"jobId":"jobs:trace"' in requests[0].content
+    assert b'"path":"traceCases:recordCandidate"' in requests[0].content
+    assert b'"path":"traceCases:complete"' in requests[1].content
