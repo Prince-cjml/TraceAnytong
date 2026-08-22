@@ -8,6 +8,15 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { useConvexDeploymentConfigured } from "./convex-client-provider";
 
 type WebSession = { sessionId: Id<"webSessions"> };
+type ScreenProfile = { available: true; profileId: string; profileVersion: string } | { available: false; reason: "missing" | "ambiguous" };
+
+export function screenProfileNotice(profile: ScreenProfile | null | undefined): string | null {
+  if (profile === undefined) return null;
+  if (profile === null || profile.available) return null;
+  return profile.reason === "ambiguous"
+    ? "Protected content is withheld because the active screen profile registry is ambiguous."
+    : "Protected content is withheld because no active screen profile is configured.";
+}
 
 export function ProtectedContent({ routeScope }: { routeScope: string }) {
   const configured = useConvexDeploymentConfigured();
@@ -20,11 +29,12 @@ function AuthenticatedProtectedContent({ routeScope }: { routeScope: string }) {
   const createSession = useMutation(api.webSessions.createOrReuse);
   const [session, setSession] = useState<WebSession | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const profileId = process.env.NEXT_PUBLIC_SCREEN_PROFILE_ID ?? "document-screen";
+  const screenProfile = useQuery((api as any).watermarkProfiles.getActiveScreenProfile, isAuthenticated ? {} : "skip") as ScreenProfile | undefined;
+  const profileId = screenProfile?.available ? screenProfile.profileId : null;
   const tileUrl = useQuery(api.webSessions.getTileDownloadUrl, session ? { sessionId: session.sessionId } : "skip");
 
   useEffect(() => {
-    if (isLoading || !isAuthenticated || session || error) return;
+    if (isLoading || !isAuthenticated || !profileId || session || error) return;
     const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
     void createSession({ routeScope, profileId, epoch: Math.floor(Date.now() / 86_400_000), expiresAt })
       .then((created) => setSession({ sessionId: created.sessionId }))
@@ -33,6 +43,9 @@ function AuthenticatedProtectedContent({ routeScope }: { routeScope: string }) {
 
   if (isLoading) return <ProtectedContentNotice state="checking" title="Checking access…" detail="A protected session will only be acquired after authentication succeeds." />;
   if (!isAuthenticated) return <ProtectedContentNotice state="blocked" title="Sign in required" detail="This route never creates a forensic web session for unauthenticated visitors." />;
+  if (screenProfile === undefined) return <ProtectedContentNotice state="checking" title="Preparing protected view…" detail="Loading the authorized screen-carrier profile." />;
+  const profileNotice = screenProfileNotice(screenProfile);
+  if (profileNotice) return <ProtectedContentNotice state="blocked" title="Protected profile unavailable" detail={profileNotice} />;
   if (error) return <ProtectedContentNotice state="blocked" title="Protected session unavailable" detail={error} />;
   if (!session || tileUrl === undefined) return <ProtectedContentNotice state="checking" title="Preparing protected view…" detail="Creating a bounded anonymous session and waiting for its authorized watermark tile." />;
   if (!tileUrl) return <ProtectedContentNotice state="blocked" title="Watermark tile unavailable" detail="This authenticated view fails closed until the control plane returns an authorized session-specific tile URL." />;
