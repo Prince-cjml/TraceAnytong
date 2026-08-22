@@ -7,6 +7,11 @@ import { canAccessSessionTile } from "./webSessionRules";
 
 const MAX_SESSION_MS = 12 * 60 * 60 * 1000;
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export const createOrReuse = mutation({
   args: { routeScope: v.string(), profileId: v.string(), epoch: v.number(), expiresAt: v.number() },
   handler: async (ctx, args) => {
@@ -29,6 +34,13 @@ export const createOrReuse = mutation({
       profileId: args.profileId, epoch: args.epoch, startedAt: now, expiresAt: args.expiresAt, lastSeenAt: now,
     });
     const session = await ctx.db.get(sessionId);
+    // Tiles are generated only by the worker. The browser receives a URL only
+    // after `jobs.complete` atomically binds worker output to this session.
+    await ctx.db.insert("jobs", {
+      orgId: user.orgId, jobKey: await sha256Hex(`web_tile|${sessionId}`), type: "web_tile",
+      webSessionId: sessionId, profileId: args.profileId, workerClass: "cpu", state: "queued",
+      nextAttemptAt: now, attempts: 0, createdAt: now, updatedAt: now,
+    });
     await writeAuditEvent(ctx, { orgId: user.orgId, actorId: user._id, action: "web_session.created", entityType: "webSession", entityId: sessionId, detailsHash: `${args.profileId}:${args.epoch}` });
     return { sessionId, traceHandle: session!.traceHandle, reused: false };
   },

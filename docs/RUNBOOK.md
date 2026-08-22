@@ -12,6 +12,8 @@ The CI workflow runs the UI build, workspace tests, standalone Convex typecheck,
 
 The UI reads `NEXT_PUBLIC_CONVEX_URL`; worker-only `CONVEX_URL` and `WORKER_TOKEN` must remain outside browser configuration. Set the worker token through `npx convex env set WORKER_TOKEN` and provide the same value only to the deployed worker service.
 
+For every active profile that the worker is allowed to process, configure `WORKER_PROFILE_<PROFILE_ID>_SECRET_BASE64` and the exact immutable `WORKER_PROFILE_<PROFILE_ID>_VERSION`. Screen profiles are required for protected-page tiles: creating a web session queues a `web_tile` job, and the protected UI remains fail-closed until its worker-generated PNG has been bound to that session. The worker defaults to no inherited HTTP proxy; set `WORKER_HTTP_TRUST_ENV=true` only where an explicitly managed egress proxy is required.
+
 ## Development demo bootstrap
 
 The Convex development deployment can create a deterministic, non-PII demo organization, four role fixtures, and three immutable watermark profiles. This is not an authentication bypass: it is disabled unless both a development-mode marker and a server environment secret exist. Do not configure either `DEV_BOOTSTRAP_ENVIRONMENT` or `DEV_BOOTSTRAP_SECRET` in production.

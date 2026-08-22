@@ -53,12 +53,12 @@ export default defineSchema({
   }).index("by_traceHandle", ["traceHandle"]).index("by_route_time", ["orgId", "routeScope", "startedAt"])
     .index("by_user_time", ["userId", "startedAt"]),
   jobs: defineTable({
-    orgId: v.id("organizations"), jobKey: v.string(), type: v.string(), inputStorageId: v.id("_storage"),
-    outputStorageId: v.optional(v.id("_storage")), issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")),
+    orgId: v.id("organizations"), jobKey: v.string(), type: v.string(), inputStorageId: v.optional(v.id("_storage")),
+    outputStorageId: v.optional(v.id("_storage")), issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")), webSessionId: v.optional(v.id("webSessions")),
     profileId: v.string(), state: jobState, workerClass: v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid")),
     leaseOwner: v.optional(v.string()), leaseExpiresAt: v.optional(v.number()), nextAttemptAt: v.number(), attempts: v.number(),
     lastError: v.optional(v.string()), result: v.optional(v.any()), createdAt: v.number(), updatedAt: v.number(),
-  }).index("by_jobKey", ["jobKey"]).index("by_state_nextAttemptAt", ["state", "nextAttemptAt"])
+  }).index("by_jobKey", ["jobKey"]).index("by_webSessionId", ["webSessionId"]).index("by_state_nextAttemptAt", ["state", "nextAttemptAt"])
     .index("by_state_leaseExpiresAt", ["state", "leaseExpiresAt"]),
   traceCases: defineTable({
     orgId: v.id("organizations"), evidenceStorageId: v.id("_storage"), evidenceSha256: v.string(), evidenceMime: v.string(),

@@ -8,12 +8,14 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import io
 import os
 import re
 from dataclasses import asdict, dataclass
 from typing import Literal, Mapping, Protocol
 
 from .control_plane import ClaimedJob, ConvexWorkerClient
+from .carriers.screen_tile import ScreenTileCarrier
 from .errors import (
     ControlPlaneError,
     InputIntegrityError,
@@ -130,7 +132,7 @@ class JobRunner:
         try:
             identity = TraceIdentity(
                 trace_handle=payload["traceHandle"],
-                scope="issuance",
+                scope=payload.get("scope", "issuance"),
                 profile_version=payload["profileVersion"],
                 created_at=int(payload.get("createdAt", 0)),
             )
@@ -183,6 +185,41 @@ class JobRunner:
             "metadata": personalized.metadata,
         }
 
+    def _web_tile_result(self, data: bytes, profile: CarrierProfile) -> dict:
+        return {
+            "workerVersion": self.settings.worker_version,
+            "profileId": profile.profile_id,
+            "profileVersion": profile.profile_version,
+            "keyVersion": profile.key_version,
+            "outputMime": "image/png",
+            "outputFilename": "web-watermark-tile.png",
+            "carrierEvidence": {
+                "carrier": "screen",
+                "detector_version": ScreenTileCarrier.detector_version,
+                "score": 1.0,
+                "raw": {"tileSize": profile.tile_size, "recovery": "issued"},
+                "warnings": [],
+            },
+            "fingerprint": {"fingerprintVersion": "sha256-v1", "sha256": hashlib.sha256(data).hexdigest(), "mimeType": "image/png", "bytes": len(data)},
+            "metadata": {"carrierVersion": ScreenTileCarrier.detector_version},
+        }
+
+    def _complete_web_tile(self, job: ClaimedJob, payload: dict, profile: CarrierProfile) -> RunOutcome:
+        identity = self._identity(payload)
+        if identity.scope != "web_session":
+            raise InputIntegrityError("web tile job must carry a web-session trace identity")
+        tile = ScreenTileCarrier().tile_rgba(identity, profile)
+        output = io.BytesIO()
+        tile.save(output, format="PNG")
+        data = output.getvalue()
+        output_sha = hashlib.sha256(data).hexdigest()
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        upload_url = self.client.create_upload_url()
+        output_storage_id = self.client.upload_output(upload_url, data, "image/png")
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        self.client.complete(self.settings.worker_id, job.job_id, output_storage_id, output_sha, self._web_tile_result(data, profile))
+        return RunOutcome("succeeded", job.job_id)
+
     def _fail(self, job: ClaimedJob, error: WorkerError) -> RunOutcome:
         try:
             self.client.fail(self.settings.worker_id, job.job_id, error.code, error.retryable)
@@ -198,25 +235,27 @@ class JobRunner:
         if job is None:
             return RunOutcome("idle")
         try:
-            if job.type != "personalize":
+            if job.type not in {"personalize", "web_tile"}:
                 raise InputIntegrityError("worker does not support this job type", details={"type": job.type})
             self.client.start(self.settings.worker_id, job.job_id)
             payload = self.client.input(self.settings.worker_id, job.job_id)
+            if payload.get("profileId") != job.profile_id:
+                raise InputIntegrityError("leased job profile does not match claimed profile")
+            identity = self._identity(payload)
+            profile = self.settings.profile_for(job.profile_id, identity.profile_version, self._env)
+            if job.type == "web_tile":
+                return self._complete_web_tile(job, payload, profile)
             input_url = payload.get("inputUrl")
             mime = payload.get("mime")
             if not isinstance(input_url, str) or not isinstance(mime, str):
                 raise InputIntegrityError("leased job input is incomplete")
-            if payload.get("profileId") != job.profile_id:
-                raise InputIntegrityError("leased job profile does not match claimed profile")
             self.client.heartbeat(self.settings.worker_id, job.job_id)
             source_bytes = self.client.download_input(input_url)
             expected_sha = payload.get("inputSha256")
             actual_sha = hashlib.sha256(source_bytes).hexdigest()
             if expected_sha is not None and expected_sha != actual_sha:
                 raise InputIntegrityError("leased input SHA-256 does not match source version")
-            identity = self._identity(payload)
             wm_code = self._wm_code(payload, mime)
-            profile = self.settings.profile_for(job.profile_id, identity.profile_version, self._env)
             source = Artifact(source_bytes, mime, self._filename(mime, job))
             personalized = self.registry.for_mime(mime).personalize(source, identity, profile, wm_code=wm_code)
             output_sha = hashlib.sha256(personalized.artifact.data).hexdigest()

@@ -156,3 +156,28 @@ def test_integral_convex_json_wm_code_is_normalized_before_personalization() -> 
     assert outcome.status == "succeeded"
     assert client.completed is not None
     assert client.completed["result"]["carrierEvidence"]["raw"]["wmCode"] == 42
+
+
+def test_web_tile_job_uploads_a_png_without_downloading_document_bytes() -> None:
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(png_bytes())
+    client.job = ClaimedJob("jobs:tile", "tile-key", "web_tile", None, "screen-v1", 9_999_999)
+    original_input = client.input
+
+    def tile_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({"scope": "web_session", "profileId": "screen-v1", "profileVersion": "profile-2026-08", "wmCode": None})
+        return payload
+
+    client.input = tile_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert "download" not in client.calls
+    assert client.completed is not None
+    assert client.completed["result"]["outputMime"] == "image/png"

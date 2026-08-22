@@ -35,7 +35,7 @@ export const claim = mutation({
     if (!job) return null;
     const leaseExpiresAt = now + LEASE_DURATION_MS;
     await ctx.db.patch(job._id, { state: "leased", leaseOwner: args.workerId, leaseExpiresAt, attempts: job.attempts + 1, updatedAt: now });
-    return { jobId: job._id, jobKey: job.jobKey, type: job.type, inputStorageId: job.inputStorageId, profileId: job.profileId, issuanceId: job.issuanceId, caseId: job.caseId, leaseExpiresAt };
+    return { jobId: job._id, jobKey: job.jobKey, type: job.type, inputStorageId: job.inputStorageId, profileId: job.profileId, issuanceId: job.issuanceId, caseId: job.caseId, webSessionId: job.webSessionId, leaseExpiresAt };
   },
 });
 
@@ -64,27 +64,30 @@ export const getWorkerInput = mutation({
     if (!job || (job.state !== "leased" && job.state !== "running") || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) {
       throw new Error("LEASE_NOT_ACTIVE");
     }
-    const [issuance, traceCase] = await Promise.all([
+    const [issuance, traceCase, webSession] = await Promise.all([
       job.issuanceId ? ctx.db.get(job.issuanceId) : null,
       job.caseId ? ctx.db.get(job.caseId) : null,
+      job.webSessionId ? ctx.db.get(job.webSessionId) : null,
     ]);
     const [version, profile] = await Promise.all([
       issuance ? ctx.db.get(issuance.versionId) : null,
       ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", job.profileId)).unique(),
     ]);
-    const inputUrl = await ctx.storage.getUrl(job.inputStorageId);
-    if (!inputUrl) throw new Error("INPUT_NOT_FOUND");
+    const inputUrl = job.inputStorageId ? await ctx.storage.getUrl(job.inputStorageId) : null;
+    if (job.type !== "web_tile" && !inputUrl) throw new Error("INPUT_NOT_FOUND");
+    if (job.type === "web_tile" && !webSession) throw new Error("WEB_SESSION_NOT_FOUND");
     return {
       inputUrl,
-      mime: version?.mime ?? traceCase?.evidenceMime ?? "application/octet-stream",
+      mime: version?.mime ?? traceCase?.evidenceMime ?? "image/png",
       inputSha256: version?.sha256 ?? traceCase?.evidenceSha256 ?? null,
-      traceHandle: issuance?.traceHandle ?? null,
+      traceHandle: issuance?.traceHandle ?? webSession?.traceHandle ?? null,
       wmCode: issuance?.wmCode ?? null,
       profileId: job.profileId,
       // The worker receives the exact immutable profile version and issuance time,
       // never a recipient identity.
       profileVersion: profile?.profileVersion ?? null,
-      createdAt: issuance?.issuedAt ?? null,
+      createdAt: issuance?.issuedAt ?? webSession?.startedAt ?? null,
+      scope: issuance ? "issuance" : webSession ? "web_session" : null,
       issuanceId: job.issuanceId ?? null,
       caseId: job.caseId ?? null,
     };
@@ -115,6 +118,7 @@ export const complete = mutation({
     if (job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
     await ctx.db.patch(args.jobId, { state: "succeeded", outputStorageId: args.outputStorageId, result: { ...args.result, outputSha256: args.outputSha256 }, leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now });
     if (job.issuanceId) await ctx.db.patch(job.issuanceId, { status: "ready", derivedStorageId: args.outputStorageId });
+    if (job.webSessionId) await ctx.db.patch(job.webSessionId, { tileStorageId: args.outputStorageId, lastSeenAt: now });
     return { status: "succeeded" as const };
   },
 });

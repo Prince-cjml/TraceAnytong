@@ -15,7 +15,7 @@ class ClaimedJob:
     job_id: str
     job_key: str
     type: str
-    input_storage_id: str
+    input_storage_id: str | None
     profile_id: str
     lease_expires_at: int
     issuance_id: str | None = None
@@ -67,7 +67,7 @@ class ConvexWorkerClient:
             return None
         return ClaimedJob(
             job_id=value["jobId"], job_key=value["jobKey"], type=value["type"],
-            input_storage_id=value["inputStorageId"], profile_id=value["profileId"],
+            input_storage_id=value.get("inputStorageId"), profile_id=value["profileId"],
             lease_expires_at=value["leaseExpiresAt"], issuance_id=value.get("issuanceId"), case_id=value.get("caseId"),
         )
 
