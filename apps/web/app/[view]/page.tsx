@@ -3,7 +3,8 @@ import { Workspace, type View } from "../../components/workspace";
 
 const views: View[] = ["documents", "trace", "benchmarks", "workers", "settings"];
 
-export default function ViewPage({ params }: { params: { view: string } }) {
-  if (!views.includes(params.view as View)) notFound();
-  return <Workspace initialView={params.view as View} />;
+export default async function ViewPage({ params, searchParams }: { params: Promise<{ view: string }>; searchParams: Promise<{ caseId?: string }> }) {
+  const [{ view }, { caseId }] = await Promise.all([params, searchParams]);
+  if (!views.includes(view as View)) notFound();
+  return <Workspace initialView={view as View} traceCaseId={caseId} />;
 }

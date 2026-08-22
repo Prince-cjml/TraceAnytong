@@ -25,6 +25,9 @@
     "paths": {
       "@traceanytong/ui": [
         "../../packages/ui/src"
+      ],
+      "@traceanytong/web-watermark": [
+        "../../packages/web-watermark/src"
       ]
     }
   },
