@@ -8,6 +8,7 @@ import { benchmarkRows, decisionTone, documents, insufficientCandidate, processi
 import { dataState, mapCaseCandidates, mapDocuments, type DataState, type WorkspaceDocument } from "../lib/control-plane";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { useConvexDeploymentConfigured } from "./convex-client-provider";
+import { TraceEvidenceUploader } from "./trace-evidence-uploader";
 
 export type View = "overview" | "documents" | "trace" | "benchmarks" | "workers" | "settings";
 const nav: { id: View; label: string; icon: string }[] = [
@@ -54,14 +55,19 @@ class LiveWorkspaceBoundary extends Component<{ initialView: View; traceCaseId?:
 }
 
 function LiveWorkspace({ initialView, traceCaseId }: { initialView: View; traceCaseId?: string }) {
+  const [activeCaseId, setActiveCaseId] = useState(traceCaseId);
   const result = useQuery(api.documents.list, {});
-  const traceCase = useQuery(api.traceCases.get, traceCaseId ? { caseId: traceCaseId as Id<"traceCases"> } : "skip");
+  const traceCase = useQuery(api.traceCases.get, activeCaseId ? { caseId: activeCaseId as Id<"traceCases"> } : "skip");
   const documentState = dataState({ enabled: true, loading: result === undefined, data: result ? mapDocuments(result) : undefined, fallback: documents });
   const liveTrace = useMemo<LiveTraceCase | undefined>(() => traceCase ? { state: traceCase.state, candidates: mapCaseCandidates(traceCase.candidates) } : undefined, [traceCase]);
-  return <WorkspaceShell initialView={initialView} documentState={documentState} liveTrace={liveTrace} />;
+  const openCase = (caseId: string) => {
+    setActiveCaseId(caseId);
+    window.history.pushState({}, "", `/trace?caseId=${encodeURIComponent(caseId)}`);
+  };
+  return <WorkspaceShell initialView={initialView} documentState={documentState} liveTrace={liveTrace} liveUploader={<TraceEvidenceUploader onCaseCreated={openCase} />} />;
 }
 
-function WorkspaceShell({ initialView, documentState, liveTrace }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveTrace?: LiveTraceCase }) {
+function WorkspaceShell({ initialView, documentState, liveTrace, liveUploader }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveTrace?: LiveTraceCase; liveUploader?: ReactNode }) {
   const [view, setView] = useState<View>(initialView);
   const [issueOpen, setIssueOpen] = useState(false);
   const [traceState, setTraceState] = useState<"upload" | "processing" | "result" | "insufficient">("upload");
@@ -72,7 +78,7 @@ function WorkspaceShell({ initialView, documentState, liveTrace }: { initialView
     <section className="stage"><header className="topbar"><div><p className="crumb">Northstar Bio <span>/</span> {title}</p><h1>{view === "trace" ? "Trace console" : title}</h1></div><div className="top-actions"><button className="icon-button" aria-label="Notifications">♧<b /></button><button className="avatar">MK</button></div></header>
       {view === "overview" && <Overview onNavigate={setView} />}
       {view === "documents" && <Documents onIssue={() => setIssueOpen(true)} documentState={documentState} />}
-      {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveTrace={liveTrace} />}
+      {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveTrace={liveTrace} liveUploader={liveUploader} />}
       {view === "benchmarks" && <Benchmarks />}
       {view === "workers" && <Workers />}
       {view === "settings" && <Settings />}
@@ -88,7 +94,7 @@ function DocumentTableMessage({ message }: { message: string }) { return <div cl
 
 function IssueDialog({ close }: { close: () => void }) { const [phase, setPhase] = useState<"ready" | "processing" | "complete">("ready"); return <div className="modal-backdrop" role="presentation"><Card className="modal" role="dialog" aria-modal="true" aria-label="Issue protected copy"><button className="modal-close" onClick={close}>×</button><Badge tone="info">NEW ISSUANCE</Badge><h2>Issue protected copy</h2><p className="muted">Creates an anonymous trace identity and a separate, immutable derivative.</p><label>Recipient reference<input defaultValue="Finance team · recipient 08" /></label><label>Watermark profile<select defaultValue="document-screen"><option value="document-screen">document-screen / 2.1</option><option value="document-camera">document-camera / 1.3</option></select></label><label>Expiry <input type="date" defaultValue="2026-09-21" /></label>{phase === "processing" && <div className="issuance-progress"><i /><span>Embedding carrier and preserving derivative…</span></div>}{phase === "complete" && <div className="issuance-done">✓ Protected copy is ready. Trace handle is stored server-side only.</div>}<div className="modal-actions"><button className="secondary" onClick={close}>Cancel</button><button className="primary" onClick={() => phase === "ready" ? setPhase("processing") : phase === "processing" ? setPhase("complete") : close()}>{phase === "ready" ? "Generate copy" : phase === "processing" ? "Mark ready" : "Done"}</button></div></Card></div>; }
 
-function TraceConsole({ state, setState, selected, setSelected, liveTrace }: { state: "upload" | "processing" | "result" | "insufficient"; setState: (state: "upload" | "processing" | "result" | "insufficient") => void; selected: TraceCandidate; setSelected: (candidate: TraceCandidate) => void; liveTrace?: LiveTraceCase }) {
+function TraceConsole({ state, setState, selected, setSelected, liveTrace, liveUploader }: { state: "upload" | "processing" | "result" | "insufficient"; setState: (state: "upload" | "processing" | "result" | "insufficient") => void; selected: TraceCandidate; setSelected: (candidate: TraceCandidate) => void; liveTrace?: LiveTraceCase; liveUploader?: ReactNode }) {
   useEffect(() => {
     if (!liveTrace) return;
     if (liveTrace.state === "queued" || liveTrace.state === "processing") return setState("processing");
@@ -98,7 +104,7 @@ function TraceConsole({ state, setState, selected, setSelected, liveTrace }: { s
   }, [liveTrace, setSelected, setState]);
   const complete = state === "result" || state === "insufficient";
   const candidates = liveTrace?.candidates ?? (state === "insufficient" ? [insufficientCandidate] : traceCandidates);
-  return <div className="page trace-page"><div className="trace-steps">{["Upload evidence", "Analyze evidence", "Review result"].map((step, i) => <div key={step} className={(i === 0 || (i === 1 && state !== "upload") || (i === 2 && complete)) ? "step current" : "step"}><b>{i + 1}</b><span>{step}</span></div>)}</div>{state === "upload" && <UploadPanel onRun={(insufficient) => { setSelected(insufficient ? insufficientCandidate : traceCandidates[0]); setState("processing"); }} />}{state === "processing" && <ProcessingPanel onComplete={(insufficient) => setState(insufficient ? "insufficient" : "result")} />}{complete && <TraceResult candidate={selected} candidates={candidates} select={setSelected} reset={() => setState("upload")} source={liveTrace ? "live" : "demo"} />}</div>;
+  return <div className="page trace-page"><div className="trace-steps">{["Upload evidence", "Analyze evidence", "Review result"].map((step, i) => <div key={step} className={(i === 0 || (i === 1 && state !== "upload") || (i === 2 && complete)) ? "step current" : "step"}><b>{i + 1}</b><span>{step}</span></div>)}</div>{state === "upload" && (liveUploader ?? <UploadPanel onRun={(insufficient) => { setSelected(insufficient ? insufficientCandidate : traceCandidates[0]); setState("processing"); }} />)}{state === "processing" && <ProcessingPanel onComplete={(insufficient) => setState(insufficient ? "insufficient" : "result")} />}{complete && <TraceResult candidate={selected} candidates={candidates} select={setSelected} reset={() => setState("upload")} source={liveTrace ? "live" : "demo"} />}</div>;
 }
 
 function UploadPanel({ onRun }: { onRun: (insufficient: boolean) => void }) { const [file, setFile] = useState<string | null>(null); return <div className="trace-upload"><Card className="dropzone"><div className="upload-glyph">↑</div><h2>{file ? file : "Drop leak evidence here"}</h2><p>{file ? "Evidence will be hashed and preserved before any analysis." : "Screenshots, photos, PDFs, Office documents and images are supported."}</p><div><label className="file-button">Choose file<input type="file" onChange={(event) => setFile(event.target.files?.[0]?.name ?? "leak-screenshot.png")} /></label><span>or drag and drop</span></div>{file && <div className="file-preview"><span>PNG</span><b>{file}</b><small>2.4 MB · SHA-256 pending</small><button onClick={() => setFile(null)}>×</button></div>}</Card><div className="trace-side-note"><Badge tone="info">EVIDENCE INTEGRITY</Badge><h3>Preserve first. Process second.</h3><p>The original upload is immutable. Trace results separate watermark, content, geometry, structure, and timeline signals.</p><button className="primary" disabled={!file} onClick={() => onRun(false)}>Preserve and analyze <span>→</span></button><button className="text-button demo-alt" onClick={() => onRun(true)}>Preview insufficient-evidence state</button></div></div>; }
