@@ -31,23 +31,25 @@ function AuthenticatedProtectedContent({ routeScope }: { routeScope: string }) {
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to establish a protected session."));
   }, [createSession, error, isAuthenticated, isLoading, profileId, routeScope, session]);
 
-  if (isLoading) return <ProtectedContentNotice title="Checking access…" detail="A protected session will only be acquired after authentication succeeds." />;
-  if (!isAuthenticated) return <ProtectedContentNotice title="Sign in required" detail="This route never creates a forensic web session for unauthenticated visitors." />;
-  if (error) return <ProtectedContentNotice title="Protected session unavailable" detail={error} />;
-  if (!session || tileUrl === undefined) return <ProtectedContentNotice title="Preparing protected view…" detail="Creating a bounded anonymous session and waiting for its authorized watermark tile." />;
-  if (!tileUrl) return <ProtectedContentNotice title="Watermark tile unavailable" detail="This authenticated view fails closed until the control plane returns an authorized session-specific tile URL." />;
+  if (isLoading) return <ProtectedContentNotice state="checking" title="Checking access…" detail="A protected session will only be acquired after authentication succeeds." />;
+  if (!isAuthenticated) return <ProtectedContentNotice state="blocked" title="Sign in required" detail="This route never creates a forensic web session for unauthenticated visitors." />;
+  if (error) return <ProtectedContentNotice state="blocked" title="Protected session unavailable" detail={error} />;
+  if (!session || tileUrl === undefined) return <ProtectedContentNotice state="checking" title="Preparing protected view…" detail="Creating a bounded anonymous session and waiting for its authorized watermark tile." />;
+  if (!tileUrl) return <ProtectedContentNotice state="blocked" title="Watermark tile unavailable" detail="This authenticated view fails closed until the control plane returns an authorized session-specific tile URL." />;
 
   return <main className="protected-content">
     <ForensicWatermarkLayer tileUrl={tileUrl} routeScope={routeScope} />
     <article>
+      <div className="protected-status"><span>●</span> Session verified · static carrier active</div>
       <p className="crumb">PROTECTED CONTENT <span>/</span> AUTHORIZED VIEW</p>
       <h1>Forensic protected document</h1>
       <p>This route confirms access before rendering a static, pointer-safe screen carrier. Tile pixels are returned through an authorized control-plane URL; the session identifier and carrier material remain server-side.</p>
       <section><h2>Authorized material</h2><p>Replace this route body with the protected document renderer. Keep interactive content below the fixed watermark layer; its pointer events are permanently disabled.</p></section>
+      <dl className="protection-facts"><div><dt>Carrier</dt><dd>Static session tile</dd></div><div><dt>Access</dt><dd>Bounded and authorized</dd></div><div><dt>Interaction</dt><dd>Pointer-safe overlay</dd></div></dl>
     </article>
   </main>;
 }
 
-function ProtectedContentNotice({ title, detail }: { title: string; detail: string }) {
-  return <main className="protected-content protected-content--notice"><article><p className="crumb">PROTECTED CONTENT</p><h1>{title}</h1><p>{detail}</p></article></main>;
+function ProtectedContentNotice({ title, detail, state }: { title: string; detail: string; state?: "checking" | "blocked" }) {
+  return <main className="protected-content protected-content--notice"><article aria-live="polite"><div className={`protected-status protected-status--${state ?? "checking"}`}><span>{state === "blocked" ? "!" : "◌"}</span> {state === "blocked" ? "Content remains withheld" : "Authorization in progress"}</div><p className="crumb">PROTECTED CONTENT</p><h1>{title}</h1><p>{detail}</p><section><h2>Why this is safe</h2><p>Protected content is never rendered beneath a missing or unauthorized watermark tile. Resolve access or try again after the control plane is available.</p></section></article></main>;
 }
