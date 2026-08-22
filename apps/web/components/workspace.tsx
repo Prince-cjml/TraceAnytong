@@ -10,6 +10,7 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { useConvexDeploymentConfigured } from "./convex-client-provider";
 import { TraceEvidenceUploader } from "./trace-evidence-uploader";
 import { DocumentIntake } from "./document-intake";
+import { Onboarding } from "./onboarding";
 
 export type View = "overview" | "documents" | "trace" | "benchmarks" | "workers" | "settings";
 const nav: { id: View; label: string; icon: string }[] = [
@@ -42,6 +43,15 @@ function AuthenticatedWorkspace({ initialView, traceCaseId }: { initialView: Vie
   const { isLoading, isAuthenticated } = useConvexAuth();
   if (isLoading) return <WorkspaceShell initialView={initialView} documentState={{ kind: "loading", source: "live" }} />;
   if (!isAuthenticated) return <WorkspaceShell initialView={initialView} documentState={dataState({ enabled: false, loading: false, fallback: documents })} />;
+  return <MembershipGate initialView={initialView} traceCaseId={traceCaseId} />;
+}
+
+type AccessStatus = { state: "member"; role: string } | { state: "unprovisioned"; canCreateOrganization: boolean };
+
+function MembershipGate({ initialView, traceCaseId }: { initialView: View; traceCaseId?: string }) {
+  const access = useQuery((api as any).onboarding.accessStatus, {}) as AccessStatus | undefined;
+  if (!access) return <WorkspaceShell initialView={initialView} documentState={{ kind: "loading", source: "live" }} />;
+  if (access.state === "unprovisioned") return <Onboarding />;
   return <LiveWorkspaceBoundary initialView={initialView} traceCaseId={traceCaseId} />;
 }
 
@@ -65,10 +75,10 @@ function LiveWorkspace({ initialView, traceCaseId }: { initialView: View; traceC
     setActiveCaseId(caseId);
     window.history.pushState({}, "", `/trace?caseId=${encodeURIComponent(caseId)}`);
   };
-  return <WorkspaceShell initialView={initialView} documentState={documentState} liveTrace={liveTrace} liveUploader={<TraceEvidenceUploader onCaseCreated={openCase} />} liveDocumentIntake={<DocumentIntake />} />;
+  return <WorkspaceShell initialView={initialView} documentState={documentState} liveTrace={liveTrace} liveUploader={<TraceEvidenceUploader onCaseCreated={openCase} />} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} />;
 }
 
-function WorkspaceShell({ initialView, documentState, liveTrace, liveUploader, liveDocumentIntake }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveDocumentIntake?: ReactNode }) {
+function WorkspaceShell({ initialView, documentState, liveTrace, liveUploader, liveDocumentIntake, liveOnboarding }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode }) {
   const [view, setView] = useState<View>(initialView);
   const [issueOpen, setIssueOpen] = useState(false);
   const [traceState, setTraceState] = useState<"upload" | "processing" | "result" | "insufficient">("upload");
@@ -82,7 +92,7 @@ function WorkspaceShell({ initialView, documentState, liveTrace, liveUploader, l
       {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveTrace={liveTrace} liveUploader={liveUploader} />}
       {view === "benchmarks" && <Benchmarks />}
       {view === "workers" && <Workers />}
-      {view === "settings" && <Settings />}
+      {view === "settings" && <Settings liveOnboarding={liveOnboarding} />}
     </section>{issueOpen && <IssueDialog close={() => setIssueOpen(false)} />}
   </main>;
 }
@@ -126,4 +136,4 @@ function Benchmarks() { return <div className="page"><div className="page-action
 
 function Workers() { return <div className="page"><div className="worker-head"><div><Badge tone="success">3 / 3 AVAILABLE</Badge><h2>Worker fleet</h2><p>Leased jobs are recoverable after ten minutes. No active lease has expired.</p></div><button className="primary">View job queue →</button></div><div className="worker-grid">{workers.map((worker) => <Card className="worker" key={worker.id}><div className="worker-top"><span className="worker-icon">◉</span><Badge tone={worker.state === "Busy" ? "warning" : "success"}>{worker.state}</Badge></div><b className="mono">{worker.id}</b><small>{worker.class} worker · {worker.version}</small><div className="worker-jobs"><span>Leased jobs <b>{worker.jobs}</b></span><span>Last heartbeat <b>{worker.lease}</b></span></div></Card>)}</div><Card className="table-card"><div className="card-head"><div><p>Queue activity</p><strong>45 active jobs · 0 retryable · 0 expired leases</strong></div><Badge tone="info">LIVE</Badge></div><div className="queue-chart">{[48,41,64,56,69,45,72,80,58,63,52,75,69,46,62,55,88,67,73,48].map((h, i) => <i key={i} style={{ height: `${h}%` }} />)}</div></Card></div>; }
 
-function Settings() { return <div className="page settings"><Card><Badge tone="info">ORGANIZATION POLICY</Badge><h2>Forensic defaults</h2><div className="setting-row"><div><b>Evidence retention</b><p>Preserve original evidence objects immutably.</p></div><select defaultValue="365"><option value="365">365 days</option><option value="730">730 days</option></select></div><div className="setting-row"><div><b>Ambiguous evidence policy</b><p>Never attribute below the profile confidence and margin thresholds.</p></div><Badge tone="success">ENFORCED</Badge></div><div className="setting-row"><div><b>Trace identity policy</b><p>Trace handles are random opaque identifiers; recipient identity is resolved server-side only.</p></div><Badge tone="success">ENFORCED</Badge></div></Card><Card><p>PROFILE REGISTRY</p><h3>document-screen / 2.1</h3><div className="settings-tags"><Badge>Static tile</Badge><Badge>Pointer-safe</Badge><Badge>Key v4</Badge><Badge>Thresholds immutable</Badge></div></Card></div>; }
+function Settings({ liveOnboarding }: { liveOnboarding?: ReactNode }) { return <div className="page settings"><Card><Badge tone="info">ORGANIZATION POLICY</Badge><h2>Forensic defaults</h2><div className="setting-row"><div><b>Evidence retention</b><p>Preserve original evidence objects immutably.</p></div><select defaultValue="365"><option value="365">365 days</option><option value="730">730 days</option></select></div><div className="setting-row"><div><b>Ambiguous evidence policy</b><p>Never attribute below the profile confidence and margin thresholds.</p></div><Badge tone="success">ENFORCED</Badge></div><div className="setting-row"><div><b>Trace identity policy</b><p>Trace handles are random opaque identifiers; recipient identity is resolved server-side only.</p></div><Badge tone="success">ENFORCED</Badge></div></Card><Card><p>PROFILE REGISTRY</p><h3>document-screen / 2.1</h3><div className="settings-tags"><Badge>Static tile</Badge><Badge>Pointer-safe</Badge><Badge>Key v4</Badge><Badge>Thresholds immutable</Badge></div></Card>{liveOnboarding}</div>; }
