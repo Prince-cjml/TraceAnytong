@@ -1,1 +1,0 @@
-"""TraceAnytong watermark worker."""

@@ -1,9 +1,12 @@
 node_modules/
+.npm-cache/
 .next/
 .env*
 !.env.example
 __pycache__/
 .pytest_cache/
 .venv/
+*.egg-info/
+build/
 dist/
 coverage/
