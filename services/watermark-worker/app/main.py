@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import sys
 from dataclasses import asdict
 
 from fastapi import FastAPI, Request
@@ -12,6 +13,7 @@ from PIL import Image
 from .carriers.image_code import ImageCodeCarrier
 from .carriers.screen_tile import ScreenTileCarrier
 from .errors import WorkerError
+from .execution import WorkerSettings, create_runner_from_env
 from .formats.registry import AdapterRegistry
 from .models import Artifact, CarrierProfile, TraceIdentity
 
@@ -86,3 +88,41 @@ def detect_screen_candidate(payload: CandidatePayload) -> dict:
     image = Image.open(io.BytesIO(base64.b64decode(payload.evidenceBase64, validate=True)))
     evidence = ScreenTileCarrier().detect_candidate(image, payload.identity.model_value(), payload.profile.model_value())
     return {"carrierEvidence": asdict(evidence)}
+
+
+@app.post("/v1/worker/run-once")
+def run_worker_once(request: Request) -> dict | JSONResponse:
+    """Run one lease-safe job when the service-local trigger token is configured."""
+    settings = WorkerSettings.from_env()
+    configured_token = settings.http_trigger_token
+    if not configured_token or request.headers.get("X-Worker-Trigger-Token") != configured_token:
+        return JSONResponse(status_code=403, content={"error": {"code": "FORBIDDEN", "message": "worker trigger is not authorized"}})
+    runner, client = create_runner_from_env()
+    try:
+        return runner.run_once().to_dict()
+    finally:
+        client.close()
+
+
+def main() -> None:
+    """CLI entrypoint: ``traceanytong-worker run-once`` or ``serve``."""
+    command = sys.argv[1] if len(sys.argv) > 1 else "run-once"
+    if command == "run-once":
+        runner, client = create_runner_from_env()
+        try:
+            outcome = runner.run_once()
+            print(outcome.to_dict())
+            if outcome.status == "failed":
+                raise SystemExit(1)
+        finally:
+            client.close()
+        return
+    if command == "serve":
+        import uvicorn
+        uvicorn.run("app.main:app", host="0.0.0.0", port=8000)
+        return
+    raise SystemExit("usage: traceanytong-worker [run-once|serve]")
+
+
+if __name__ == "__main__":
+    main()
