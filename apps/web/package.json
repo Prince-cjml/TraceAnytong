@@ -12,6 +12,7 @@
   "dependencies": {
     "@traceanytong/ui": "file:../../packages/ui",
     "@traceanytong/web-watermark": "file:../../packages/web-watermark",
+    "@workos-inc/authkit-nextjs": "^4.3.1",
     "convex": "^1.25.4",
     "next": "16.3.2",
     "react": "18.3.1",
