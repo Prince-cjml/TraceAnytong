@@ -25,6 +25,13 @@ def test_runner_emits_complete_deterministic_negative_safe_artifacts(tmp_path) -
     assert {result["matrix"] for result in first["results"]} == {"image", "document", "physical"}
     assert first["negativeCorpus"]["falseAttributionCount"] == 0
     assert {result["attribution"]["status"] for result in first["results"] if result["corpus"] == "negative"} == {"INSUFFICIENT"}
+    assert first["workerEvidence"]["deterministic"] is True
+    assert first["workerEvidence"]["confirmedAttributions"] == 0
+    assert first["workerEvidence"]["versions"]["imageDetector"] == "image-code-fallback-detector-v1"
+    assert first["workerEvidence"]["versions"]["screenDetector"] == "screen-correlation-v1"
+    assert first["workerEvidence"]["versions"]["structureDetector"] == "native-structure-detector-v1"
+    assert {result["channel"] for result in first["workerEvidence"]["results"]} == {"image", "screen", "structure"}
+    assert {result["attribution"]["status"] for result in first["workerEvidence"]["results"]} <= {"UNMEASURED", "INSUFFICIENT"}
     for filename in ("report.json", "summary.md", "matrix.csv"):
         assert (first_output / filename).is_file()
     report = json.loads((first_output / "report.json").read_text(encoding="utf-8"))

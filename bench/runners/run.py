@@ -20,6 +20,7 @@ from PIL import Image, ImageChops, ImageOps, ImageStat
 
 from bench.attacks import ATTACKS, DOCUMENT_ATTACKS, PHYSICAL_ATTACKS, Attack, apply_attack, apply_document_attack, apply_physical_attack
 from bench.fixtures import MANIFEST_NAME, generate_fixtures, load_manifest
+from bench.worker_evidence import collect_worker_evidence
 
 
 REPORT_SCHEMA_VERSION = "0.2"
@@ -98,7 +99,13 @@ def _write_summary(output: Path, report: dict[str, object]) -> None:
     negative = report["negativeCorpus"]
     lines = ["# Benchmark summary", "", f"Deterministic artifact run: {report['samples']} samples from {report['fixtures']} fixtures.", "", "| Matrix | Samples |", "| --- | ---: |"]
     lines.extend(f"| {name} | {by_matrix[name]} |" for name in sorted(by_matrix))
-    lines.extend(["", "## Negative corpus", "", f"- Fixtures: {negative['fixtures']}", f"- Samples: {negative['samples']}", f"- Confirmed attributions: {negative['confirmedAttributions']}", f"- False-attribution count: {negative['falseAttributionCount']}", "", "Attribution is deliberately `UNMEASURED` for positives and `INSUFFICIENT` for negatives until a detector provides raw evidence."])
+    worker_evidence = report["workerEvidence"]
+    worker_counts = worker_evidence["decisionCounts"]
+    lines.extend([
+        "", "## Negative corpus", "", f"- Fixtures: {negative['fixtures']}", f"- Samples: {negative['samples']}", f"- Confirmed attributions: {negative['confirmedAttributions']}", f"- False-attribution count: {negative['falseAttributionCount']}",
+        "", "## Local worker evidence", "", f"- Probes: {len(worker_evidence['results'])}", f"- Decision counts: {', '.join(f'{key}={worker_counts[key]}' for key in sorted(worker_counts))}", f"- Confirmed attributions: {worker_evidence['confirmedAttributions']}",
+        "", "The raster matrix reports artifact transformations only. The local worker matrix preserves raw carrier evidence and package/detector versions, but intentionally returns `UNMEASURED` or `INSUFFICIENT`: benchmark data has no authorized server-side provenance binding.",
+    ])
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -145,7 +152,8 @@ def run(fixtures_root: Path, output: Path, *, generate: bool = False) -> dict[st
     results.sort(key=lambda item: (str(item["fixtureId"]), str(item["matrix"]), str(item["attack"]), float(item["value"])))
     negative_results = [item for item in results if item["corpus"] == "negative"]
     confirmed_negative = [item for item in negative_results if item["attribution"]["status"] == "CONFIRMED"]
-    report = {"schemaVersion": REPORT_SCHEMA_VERSION, "deterministic": True, "fixtures": len(fixtures), "samples": len(results), "falseAttributions": len(confirmed_negative), "negativeCorpus": {"fixtures": sum(item["corpus"] == "negative" for item in fixtures), "samples": len(negative_results), "confirmedAttributions": len(confirmed_negative), "falseAttributionCount": len(confirmed_negative), "decisionCounts": dict(sorted(Counter(item["attribution"]["status"] for item in negative_results).items()))}, "results": results}
+    worker_evidence = collect_worker_evidence(fixtures_root)
+    report = {"schemaVersion": REPORT_SCHEMA_VERSION, "deterministic": True, "fixtures": len(fixtures), "samples": len(results), "falseAttributions": len(confirmed_negative), "negativeCorpus": {"fixtures": sum(item["corpus"] == "negative" for item in fixtures), "samples": len(negative_results), "confirmedAttributions": len(confirmed_negative), "falseAttributionCount": len(confirmed_negative), "decisionCounts": dict(sorted(Counter(item["attribution"]["status"] for item in negative_results).items()))}, "workerEvidence": worker_evidence, "results": results}
     (output / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     with (output / "matrix.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=MATRIX_FIELDS)
