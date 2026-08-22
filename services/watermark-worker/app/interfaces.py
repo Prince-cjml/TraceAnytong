@@ -1,0 +1,26 @@
+"""Stable extension interfaces. Concrete modules may be replaced without API churn."""
+from __future__ import annotations
+
+from typing import Protocol, Sequence
+
+from .models import Artifact, CandidateRank, CarrierEvidence, CarrierProfile, FingerprintEvidence, PersonalizationResult, TraceIdentity
+
+
+class Carrier(Protocol):
+    def embed(self, artifact: Artifact, trace_identity: TraceIdentity, profile: CarrierProfile, **kwargs: object) -> PersonalizationResult: ...
+    def detect(self, evidence: Artifact, profile: CarrierProfile, **kwargs: object) -> CarrierEvidence: ...
+
+
+class Fingerprinter(Protocol):
+    def index(self, artifact: Artifact) -> dict: ...
+    def search(self, evidence: Artifact, candidates: Sequence[dict]) -> Sequence[FingerprintEvidence]: ...
+
+
+class FormatAdapter(Protocol):
+    def supports(self, mime: str) -> bool: ...
+    def personalize(self, artifact: Artifact, trace_identity: TraceIdentity, profile: CarrierProfile, **kwargs: object) -> PersonalizationResult: ...
+    def render_reference(self, artifact: Artifact) -> list[Artifact]: ...
+
+
+class EvidenceFusion(Protocol):
+    def rank(self, case: dict, carrier_evidence: Sequence[CarrierEvidence], fingerprint_evidence: Sequence[FingerprintEvidence], timeline_evidence: dict) -> Sequence[CandidateRank]: ...
