@@ -1,0 +1,67 @@
+import { mutation, query } from "./_generated/server";
+import { v } from "convex/values";
+import { requireRole, sameOrganization } from "./auth";
+import { writeAuditEvent } from "./audit";
+
+const sha256 = v.string();
+
+function assertSha256(value: string): void {
+  if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("INVALID_SHA256");
+}
+
+export const create = mutation({
+  args: { title: v.string(), classification: v.string() },
+  handler: async (ctx, args) => {
+    const user = await requireRole(ctx, ["issuer", "admin"]);
+    const now = Date.now();
+    const documentId = await ctx.db.insert("documents", {
+      orgId: user.orgId, title: args.title, classification: args.classification, ownerId: user._id,
+      createdAt: now, updatedAt: now,
+    });
+    await writeAuditEvent(ctx, { orgId: user.orgId, actorId: user._id, action: "document.created", entityType: "document", entityId: documentId, detailsHash: "metadata-only" });
+    return documentId;
+  },
+});
+
+/** Source versions are append-only. A new upload must create a new row and storage ID. */
+export const addVersion = mutation({
+  args: {
+    documentId: v.id("documents"), sourceStorageId: v.id("_storage"), sha256, mime: v.string(), size: v.number(),
+    pageCount: v.optional(v.number()), fingerprintVersion: v.string(), coarseFingerprint: v.string(),
+  },
+  handler: async (ctx, args) => {
+    assertSha256(args.sha256);
+    if (!Number.isInteger(args.size) || args.size < 0) throw new Error("INVALID_SIZE");
+    const user = await requireRole(ctx, ["issuer", "admin"]);
+    const document = await ctx.db.get(args.documentId);
+    if (!document) throw new Error("NOT_FOUND");
+    sameOrganization(document.orgId, user);
+    const now = Date.now();
+    const versionId = await ctx.db.insert("documentVersions", { ...args, createdAt: now });
+    await ctx.db.patch(args.documentId, { currentVersionId: versionId, updatedAt: now });
+    await writeAuditEvent(ctx, { orgId: user.orgId, actorId: user._id, action: "document.version_created", entityType: "documentVersion", entityId: versionId, detailsHash: args.sha256 });
+    return versionId;
+  },
+});
+
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requireRole(ctx, ["viewer", "issuer", "investigator", "admin"]);
+    return await ctx.db.query("documents").withIndex("by_org_updated", (q) => q.eq("orgId", user.orgId)).order("desc").take(100);
+  },
+});
+
+export const getSourceDownloadUrl = query({
+  args: { versionId: v.id("documentVersions") },
+  handler: async (ctx, args) => {
+    const user = await requireRole(ctx, ["viewer", "issuer", "investigator", "admin"]);
+    const version = await ctx.db.get(args.versionId);
+    if (!version) return null;
+    const document = await ctx.db.get(version.documentId);
+    if (!document) return null;
+    sameOrganization(document.orgId, user);
+    // Authorization completes before this bearer URL is created.
+    return await ctx.storage.getUrl(version.sourceStorageId);
+  },
+});

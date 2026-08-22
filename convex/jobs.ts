@@ -1,0 +1,123 @@
+import { mutation } from "./_generated/server";
+import { v } from "convex/values";
+import { requireRole, sameOrganization } from "./auth";
+import { writeAuditEvent } from "./audit";
+import { LEASE_DURATION_MS, completionDisposition, leaseIsActive, retryAt } from "./jobRules";
+import { requireWorker } from "./workerAuth";
+
+const workerClass = v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid"));
+const MAX_ATTEMPTS = 4;
+
+export const enqueue = mutation({
+  args: { jobKey: v.string(), type: v.string(), inputStorageId: v.id("_storage"), profileId: v.string(), workerClass, issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")) },
+  handler: async (ctx, args) => {
+    const user = await requireRole(ctx, ["issuer", "investigator", "admin"]);
+    const existing = await ctx.db.query("jobs").withIndex("by_jobKey", (q) => q.eq("jobKey", args.jobKey)).unique();
+    if (existing) {
+      sameOrganization(existing.orgId, user);
+      return { jobId: existing._id, created: false };
+    }
+    const now = Date.now();
+    const jobId = await ctx.db.insert("jobs", { ...args, orgId: user.orgId, state: "queued", nextAttemptAt: now, attempts: 0, createdAt: now, updatedAt: now });
+    await writeAuditEvent(ctx, { orgId: user.orgId, actorId: user._id, action: "job.enqueued", entityType: "job", entityId: jobId, detailsHash: args.jobKey });
+    return { jobId, created: true };
+  },
+});
+
+export const claim = mutation({
+  args: { workerToken: v.string(), workerId: v.string(), capabilities: v.array(workerClass) },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const now = Date.now();
+    // Indexed, bounded scan: workers never enumerate the whole queue.
+    const queued = await ctx.db.query("jobs").withIndex("by_state_nextAttemptAt", (q) => q.eq("state", "queued").lte("nextAttemptAt", now)).take(100);
+    const job = queued.find((candidate) => args.capabilities.includes(candidate.workerClass));
+    if (!job) return null;
+    const leaseExpiresAt = now + LEASE_DURATION_MS;
+    await ctx.db.patch(job._id, { state: "leased", leaseOwner: args.workerId, leaseExpiresAt, attempts: job.attempts + 1, updatedAt: now });
+    return { jobId: job._id, jobKey: job.jobKey, type: job.type, inputStorageId: job.inputStorageId, profileId: job.profileId, issuanceId: job.issuanceId, caseId: job.caseId, leaseExpiresAt };
+  },
+});
+
+export const start = mutation({
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs") },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const job = await ctx.db.get(args.jobId);
+    const now = Date.now();
+    if (!job || job.state !== "leased" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    await ctx.db.patch(args.jobId, { state: "running", updatedAt: now });
+  },
+});
+
+export const heartbeat = mutation({
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs") },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const job = await ctx.db.get(args.jobId);
+    const now = Date.now();
+    if (!job || (job.state !== "leased" && job.state !== "running") || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    await ctx.db.patch(args.jobId, { leaseExpiresAt: now + LEASE_DURATION_MS, updatedAt: now });
+  },
+});
+
+export const complete = mutation({
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), outputStorageId: v.id("_storage"), outputSha256: v.string(), result: v.any() },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const job = await ctx.db.get(args.jobId);
+    if (!job) throw new Error("NOT_FOUND");
+    const disposition = completionDisposition(job.state, job.outputStorageId, args.outputStorageId);
+    if (disposition === "idempotent") return { status: "already_succeeded" as const };
+    if (disposition === "conflict") throw new Error("DUPLICATE_COMPLETION_CONFLICT");
+    const now = Date.now();
+    if (job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    await ctx.db.patch(args.jobId, { state: "succeeded", outputStorageId: args.outputStorageId, result: { ...args.result, outputSha256: args.outputSha256 }, leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now });
+    if (job.issuanceId) await ctx.db.patch(job.issuanceId, { status: "ready", derivedStorageId: args.outputStorageId });
+    return { status: "succeeded" as const };
+  },
+});
+
+export const fail = mutation({
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), error: v.string(), retryable: v.boolean() },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const job = await ctx.db.get(args.jobId);
+    const now = Date.now();
+    if (!job || job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    const shouldRetry = args.retryable && job.attempts < MAX_ATTEMPTS;
+    await ctx.db.patch(args.jobId, {
+      state: shouldRetry ? "retryable" : "failed", nextAttemptAt: shouldRetry ? retryAt(now, job.attempts) : now,
+      lastError: args.error, leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now,
+    });
+    if (job.issuanceId && !shouldRetry) await ctx.db.patch(job.issuanceId, { status: "failed" });
+  },
+});
+
+export const recoverExpiredLeases = mutation({
+  args: { workerToken: v.string() },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const now = Date.now();
+    let recovered = 0;
+    for (const state of ["leased", "running"] as const) {
+      const jobs = await ctx.db.query("jobs").withIndex("by_state_leaseExpiresAt", (q) => q.eq("state", state).lte("leaseExpiresAt", now)).take(100);
+      for (const job of jobs) {
+        await ctx.db.patch(job._id, { state: "retryable", nextAttemptAt: now, leaseOwner: undefined, leaseExpiresAt: undefined, lastError: "LEASE_EXPIRED", updatedAt: now });
+        recovered += 1;
+      }
+    }
+    return recovered;
+  },
+});
+
+export const requeueRetries = mutation({
+  args: { workerToken: v.string() },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const now = Date.now();
+    const retries = await ctx.db.query("jobs").withIndex("by_state_nextAttemptAt", (q) => q.eq("state", "retryable").lte("nextAttemptAt", now)).take(100);
+    for (const job of retries) await ctx.db.patch(job._id, { state: "queued", updatedAt: now });
+    return retries.length;
+  },
+});
