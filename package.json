@@ -11,6 +11,7 @@
     "dev": "npm run dev --workspace=@traceanytong/web",
     "build": "npm run build --workspace=@traceanytong/web",
     "test": "npm run test --workspaces --if-present",
+    "test:convex": "tsc --noEmit -p convex/tsconfig.json",
     "test:worker": "python -m pytest services/watermark-worker/tests -q",
     "bench": "python -m bench.runners.run --fixtures bench/fixtures --output bench/reports/latest"
   },

@@ -1,0 +1,29 @@
+name: verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm ci
+      - run: npm run test
+      - run: npm run test:convex
+      - run: npm run build
+      - run: python -m pip install -e 'services/watermark-worker[dev]'
+      - run: python -m pytest services/watermark-worker/tests bench/tests -q
+      - run: python -m bench.runners.run --fixtures bench/fixtures --output bench/reports/ci
