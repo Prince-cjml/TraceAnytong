@@ -66,7 +66,7 @@ export default defineSchema({
     leaseOwner: v.optional(v.string()), leaseExpiresAt: v.optional(v.number()), nextAttemptAt: v.number(), attempts: v.number(),
     lastError: v.optional(v.string()), result: v.optional(v.any()), createdAt: v.number(), updatedAt: v.number(),
   }).index("by_jobKey", ["jobKey"]).index("by_webSessionId", ["webSessionId"]).index("by_state_nextAttemptAt", ["state", "nextAttemptAt"])
-    .index("by_state_leaseExpiresAt", ["state", "leaseExpiresAt"]),
+    .index("by_state_leaseExpiresAt", ["state", "leaseExpiresAt"]).index("by_org_state", ["orgId", "state"]),
   traceCases: defineTable({
     orgId: v.id("organizations"), evidenceStorageId: v.id("_storage"), evidenceSha256: v.string(), evidenceMime: v.string(),
     reporterId: v.id("users"), suspectedDocumentId: v.optional(v.id("documents")),

@@ -1,7 +1,7 @@
 import { query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { currentUser } from "./auth";
-import { activeTraceCaseCount, boundedDashboardCount, DASHBOARD_COUNT_LIMIT } from "./dashboardRules";
+import { activeTraceCaseCount, ADMIN_JOB_STATES, boundedDashboardCount, boundedJobStateCounts, DASHBOARD_COUNT_LIMIT } from "./dashboardRules";
 
 const scanLimit = DASHBOARD_COUNT_LIMIT + 1;
 
@@ -14,12 +14,15 @@ export const getSummary = query({
   handler: async (ctx) => {
     const user = await currentUser(ctx);
     const now = Date.now();
-    const [organization, documents, ownSessions, traceCases] = await Promise.all([
+    const [organization, documents, ownSessions, traceCases, jobStateRows] = await Promise.all([
       ctx.db.get(user.orgId as Id<"organizations">),
       ctx.db.query("documents").withIndex("by_org_updated", (q) => q.eq("orgId", user.orgId)).take(scanLimit),
       ctx.db.query("webSessions").withIndex("by_user_time", (q) => q.eq("userId", user._id)).order("desc").take(scanLimit),
       user.role === "investigator" || user.role === "admin"
         ? ctx.db.query("traceCases").withIndex("by_org_created", (q) => q.eq("orgId", user.orgId)).order("desc").take(scanLimit)
+        : Promise.resolve(null),
+      user.role === "admin"
+        ? Promise.all(ADMIN_JOB_STATES.map((state) => ctx.db.query("jobs").withIndex("by_org_state", (q) => q.eq("orgId", user.orgId).eq("state", state)).take(scanLimit)))
         : Promise.resolve(null),
     ]);
     const activeSessions = ownSessions.filter((session) => session.expiresAt > now);
@@ -33,6 +36,9 @@ export const getSummary = query({
         total: boundedDashboardCount(traceCases.length),
         open: boundedDashboardCount(activeTraceCaseCount(traceCases.map((traceCase) => traceCase.state))),
       },
+      jobQueue: jobStateRows === null ? null : boundedJobStateCounts({
+        queued: jobStateRows[0], leased: jobStateRows[1], running: jobStateRows[2], retryable: jobStateRows[3], failed: jobStateRows[4],
+      }),
     };
   },
 });
