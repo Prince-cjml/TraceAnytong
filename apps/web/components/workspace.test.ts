@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { traceResultCopy, workspaceInitials } from "./workspace";
+import { canManageTraceCases, traceResultCopy, workspaceInitials } from "./workspace";
 
 describe("trace result presentation", () => {
   it("keeps an insufficient decision explicitly non-attributive", () => {
@@ -23,5 +23,15 @@ describe("workspace identity display", () => {
     expect(workspaceInitials("Northstar Bio")).toBe("NB");
     expect(workspaceInitials("Mara")).toBe("M");
     expect(workspaceInitials("   ")).toBe("?");
+  });
+});
+
+describe("live trace access", () => {
+  it("only exposes investigator trace controls to the roles authorized by the control plane", () => {
+    expect(canManageTraceCases("investigator")).toBe(true);
+    expect(canManageTraceCases("admin")).toBe(true);
+    expect(canManageTraceCases("issuer")).toBe(false);
+    expect(canManageTraceCases("viewer")).toBe(false);
+    expect(canManageTraceCases(undefined)).toBe(false);
   });
 });

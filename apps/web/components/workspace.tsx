@@ -13,6 +13,7 @@ import { DocumentIntake } from "./document-intake";
 import { Onboarding } from "./onboarding";
 import { LiveSummary } from "./live-summary";
 import { AdminJobQueue } from "./admin-job-queue";
+import { TraceCaseQueue } from "./trace-case-queue";
 
 export type View = "overview" | "documents" | "trace" | "benchmarks" | "workers" | "settings";
 const nav: { id: View; label: string; icon: string }[] = [
@@ -22,6 +23,10 @@ const nav: { id: View; label: string; icon: string }[] = [
 type LiveTraceCase = { state: "queued" | "processing" | "complete" | "failed"; candidates: TraceCandidate[] };
 type TraceSource = "live" | "demo";
 type LiveWorkspaceIdentity = { organizationName: string; memberDisplayName: string; openTraceCases?: string };
+
+export function canManageTraceCases(role?: string): boolean {
+  return role === "investigator" || role === "admin";
+}
 
 export function workspaceInitials(label: string): string {
   return label.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
@@ -59,35 +64,42 @@ function MembershipGate({ initialView, traceCaseId }: { initialView: View; trace
   const access = useQuery((api as any).onboarding.accessStatus, {}) as AccessStatus | undefined;
   if (!access) return <WorkspaceShell initialView={initialView} documentState={{ kind: "loading", source: "live" }} />;
   if (access.state === "unprovisioned") return <Onboarding />;
-  return <LiveWorkspaceBoundary initialView={initialView} traceCaseId={traceCaseId} />;
+  return <LiveWorkspaceBoundary initialView={initialView} traceCaseId={traceCaseId} role={access.role} />;
 }
 
-class LiveWorkspaceBoundary extends Component<{ initialView: View; traceCaseId?: string; children?: ReactNode }, { error: string | null }> {
+class LiveWorkspaceBoundary extends Component<{ initialView: View; traceCaseId?: string; role: string; children?: ReactNode }, { error: string | null }> {
   state = { error: null };
   static getDerivedStateFromError(error: Error) { return { error: error.message }; }
   componentDidCatch(_error: Error, _info: ErrorInfo) { /* Query errors are rendered as a bounded, recoverable UI state. */ }
   render() {
-    if (this.state.error) return <WorkspaceShell initialView={this.props.initialView} documentState={{ kind: "error", source: "live", message: this.state.error }} />;
-    return <LiveWorkspace initialView={this.props.initialView} traceCaseId={this.props.traceCaseId} />;
+    if (this.state.error) return <WorkspaceShell initialView={this.props.initialView} documentState={{ kind: "error", source: "live", message: this.state.error }} liveMode liveRole={this.props.role} />;
+    return <LiveWorkspace initialView={this.props.initialView} traceCaseId={this.props.traceCaseId} role={this.props.role} />;
   }
 }
 
-function LiveWorkspace({ initialView, traceCaseId }: { initialView: View; traceCaseId?: string }) {
+function LiveWorkspace({ initialView, traceCaseId, role }: { initialView: View; traceCaseId?: string; role: string }) {
   const [activeCaseId, setActiveCaseId] = useState(traceCaseId);
   const result = useQuery(api.documents.list, {});
   const dashboard = useQuery((api as any).dashboard.getSummary, {}) as { organizationName: string; memberDisplayName: string; traceCases: null | { open: { value: number; capped: boolean } } } | undefined;
-  const traceCase = useQuery(api.traceCases.get, activeCaseId ? { caseId: activeCaseId as Id<"traceCases"> } : "skip");
+  const canManageTrace = canManageTraceCases(role);
+  const traceCase = useQuery(api.traceCases.get, canManageTrace && activeCaseId ? { caseId: activeCaseId as Id<"traceCases"> } : "skip");
   const documentState = dataState({ enabled: true, loading: result === undefined, data: result ? mapDocuments(result) : undefined, fallback: documents });
   const liveTrace = useMemo<LiveTraceCase | undefined>(() => traceCase ? { state: traceCase.state, candidates: mapCaseCandidates(traceCase.candidates) } : undefined, [traceCase]);
   const openCase = (caseId: string) => {
     setActiveCaseId(caseId);
     window.history.pushState({}, "", `/trace?caseId=${encodeURIComponent(caseId)}`);
   };
+  const clearCase = () => {
+    setActiveCaseId(undefined);
+    window.history.pushState({}, "", "/trace");
+  };
   const identity = dashboard ? { organizationName: dashboard.organizationName, memberDisplayName: dashboard.memberDisplayName, openTraceCases: dashboard.traceCases ? `${dashboard.traceCases.open.value}${dashboard.traceCases.open.capped ? "+" : ""}` : undefined } satisfies LiveWorkspaceIdentity : undefined;
-  return <WorkspaceShell initialView={initialView} documentState={documentState} liveMode liveIdentity={identity} liveTrace={liveTrace} liveUploader={<TraceEvidenceUploader onCaseCreated={openCase} />} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} />;
+  const liveTraceQueue = canManageTrace ? <TraceCaseQueue selectedCaseId={activeCaseId} onSelectCase={openCase} /> : undefined;
+  const liveUploader = canManageTrace ? <TraceEvidenceUploader onCaseCreated={openCase} /> : undefined;
+  return <WorkspaceShell initialView={initialView} documentState={documentState} liveMode liveRole={role} liveIdentity={identity} liveTrace={liveTrace} liveUploader={liveUploader} liveTraceQueue={liveTraceQueue} onClearLiveCase={clearCase} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} />;
 }
 
-function WorkspaceShell({ initialView, documentState, liveMode = false, liveIdentity, liveTrace, liveUploader, liveDocumentIntake, liveOnboarding }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveIdentity?: LiveWorkspaceIdentity; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode }) {
+function WorkspaceShell({ initialView, documentState, liveMode = false, liveRole, liveIdentity, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase, liveDocumentIntake, liveOnboarding }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveRole?: string; liveIdentity?: LiveWorkspaceIdentity; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode }) {
   const [view, setView] = useState<View>(initialView);
   const [issueOpen, setIssueOpen] = useState(false);
   const [traceState, setTraceState] = useState<"upload" | "processing" | "result" | "insufficient">("upload");
@@ -101,7 +113,7 @@ function WorkspaceShell({ initialView, documentState, liveMode = false, liveIden
     <section className="stage"><header className="topbar"><div><p className="crumb">{organizationName} <span>/</span> {title}</p><h1>{view === "trace" ? "Trace console" : title}</h1></div><div className="top-actions"><button className="icon-button" aria-label="Notifications">♧<b /></button><button className="avatar">{workspaceInitials(memberName)}</button></div></header>
       {view === "overview" && <Overview onNavigate={setView} documentState={documentState} liveMode={liveMode} />}
       {view === "documents" && <Documents onIssue={() => setIssueOpen(true)} documentState={documentState} liveDocumentIntake={liveDocumentIntake} />}
-      {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveTrace={liveTrace} liveUploader={liveUploader} />}
+      {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveMode={liveMode} liveRole={liveRole} liveTrace={liveTrace} liveUploader={liveUploader} liveTraceQueue={liveTraceQueue} onClearLiveCase={onClearLiveCase} />}
       {view === "benchmarks" && <Benchmarks liveMode={liveMode} />}
       {view === "workers" && <Workers liveMode={liveMode} />}
       {view === "settings" && <Settings liveOnboarding={liveOnboarding} />}
@@ -117,7 +129,7 @@ function DocumentTableMessage({ message }: { message: string }) { return <div cl
 
 function IssueDialog({ close }: { close: () => void }) { const [phase, setPhase] = useState<"ready" | "processing" | "complete">("ready"); return <div className="modal-backdrop" role="presentation"><Card className="modal" role="dialog" aria-modal="true" aria-label="Issue protected copy"><button className="modal-close" onClick={close}>×</button><Badge tone="info">NEW ISSUANCE</Badge><h2>Issue protected copy</h2><p className="muted">Creates an anonymous trace identity and a separate, immutable derivative.</p><label>Recipient reference<input defaultValue="Finance team · recipient 08" /></label><label>Watermark profile<select defaultValue="document-screen"><option value="document-screen">document-screen / 2.1</option><option value="document-camera">document-camera / 1.3</option></select></label><label>Expiry <input type="date" defaultValue="2026-09-21" /></label>{phase === "processing" && <div className="issuance-progress"><i /><span>Embedding carrier and preserving derivative…</span></div>}{phase === "complete" && <div className="issuance-done">✓ Protected copy is ready. Trace handle is stored server-side only.</div>}<div className="modal-actions"><button className="secondary" onClick={close}>Cancel</button><button className="primary" onClick={() => phase === "ready" ? setPhase("processing") : phase === "processing" ? setPhase("complete") : close()}>{phase === "ready" ? "Generate copy" : phase === "processing" ? "Mark ready" : "Done"}</button></div></Card></div>; }
 
-function TraceConsole({ state, setState, selected, setSelected, liveTrace, liveUploader }: { state: "upload" | "processing" | "result" | "insufficient"; setState: (state: "upload" | "processing" | "result" | "insufficient") => void; selected: TraceCandidate; setSelected: (candidate: TraceCandidate) => void; liveTrace?: LiveTraceCase; liveUploader?: ReactNode }) {
+function TraceConsole({ state, setState, selected, setSelected, liveMode, liveRole, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase }: { state: "upload" | "processing" | "result" | "insufficient"; setState: (state: "upload" | "processing" | "result" | "insufficient") => void; selected: TraceCandidate; setSelected: (candidate: TraceCandidate) => void; liveMode: boolean; liveRole?: string; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void }) {
   useEffect(() => {
     if (!liveTrace) return;
     if (liveTrace.state === "queued" || liveTrace.state === "processing") return setState("processing");
@@ -127,8 +139,21 @@ function TraceConsole({ state, setState, selected, setSelected, liveTrace, liveU
   }, [liveTrace, setSelected, setState]);
   const complete = state === "result" || state === "insufficient";
   const candidates = liveTrace?.candidates ?? (state === "insufficient" ? [insufficientCandidate] : traceCandidates);
-  return <div className="page trace-page"><div className="trace-steps">{["Upload evidence", "Analyze evidence", "Review result"].map((step, i) => <div key={step} className={(i === 0 || (i === 1 && state !== "upload") || (i === 2 && complete)) ? "step current" : "step"}><b>{i + 1}</b><span>{step}</span></div>)}</div>{state === "upload" && (liveUploader ?? <UploadPanel onRun={(insufficient) => { setSelected(insufficient ? insufficientCandidate : traceCandidates[0]); setState("processing"); }} />)}{state === "processing" && <ProcessingPanel onComplete={(insufficient) => setState(insufficient ? "insufficient" : "result")} />}{complete && <TraceResult candidate={selected} candidates={candidates} select={setSelected} reset={() => setState("upload")} source={liveTrace ? "live" : "demo"} />}</div>;
+  const reset = () => {
+    onClearLiveCase?.();
+    setState("upload");
+  };
+  const upload = liveMode
+    ? liveUploader
+      ? <><div>{liveUploader}</div>{liveTraceQueue && <div style={{ marginTop: 20 }}>{liveTraceQueue}</div>}</>
+      : <TraceAccessNotice role={liveRole} />
+    : <UploadPanel onRun={(insufficient) => { setSelected(insufficient ? insufficientCandidate : traceCandidates[0]); setState("processing"); }} />;
+  return <div className="page trace-page"><div className="trace-steps">{["Upload evidence", "Analyze evidence", "Review result"].map((step, i) => <div key={step} className={(i === 0 || (i === 1 && state !== "upload") || (i === 2 && complete)) ? "step current" : "step"}><b>{i + 1}</b><span>{step}</span></div>)}</div>{state === "upload" && upload}{state === "processing" && (liveMode ? <LiveProcessingNotice /> : <ProcessingPanel onComplete={(insufficient) => setState(insufficient ? "insufficient" : "result")} />)}{complete && <TraceResult candidate={selected} candidates={candidates} select={setSelected} reset={reset} source={liveTrace ? "live" : "demo"} />}</div>;
 }
+
+function TraceAccessNotice({ role }: { role?: string }) { return <Card className="live-document-note"><Badge tone="info">TRACE ACCESS BOUNDARY</Badge><h2>{role ? "Trace intake is not available for this role." : "Checking trace access…"}</h2><p>{role ? "Only investigators and administrators can preserve evidence, inspect case status, or view trace results. This workspace does not show a demo trace flow while authenticated." : "The workspace waits for the control plane to confirm your role before exposing any trace action."}</p></Card>; }
+
+function LiveProcessingNotice() { return <Card className="live-document-note"><Badge tone="info">AUTHORIZED CASE PROCESSING</Badge><h2>Analysis is in progress.</h2><p>The original evidence is immutable. This page updates when the control plane publishes a completed or insufficient result; it does not simulate detector progress.</p></Card>; }
 
 function UploadPanel({ onRun }: { onRun: (insufficient: boolean) => void }) { const [file, setFile] = useState<string | null>(null); return <div className="trace-upload"><Card className="dropzone"><div className="upload-glyph">↑</div><h2>{file ? file : "Drop leak evidence here"}</h2><p>{file ? "Evidence will be hashed and preserved before any analysis." : "Screenshots, photos, PDFs, Office documents and images are supported."}</p><div><label className="file-button">Choose file<input type="file" onChange={(event) => setFile(event.target.files?.[0]?.name ?? "leak-screenshot.png")} /></label><span>or drag and drop</span></div>{file && <div className="file-preview"><span>PNG</span><b>{file}</b><small>2.4 MB · SHA-256 pending</small><button onClick={() => setFile(null)}>×</button></div>}</Card><div className="trace-side-note"><Badge tone="info">EVIDENCE INTEGRITY</Badge><h3>Preserve first. Process second.</h3><p>The original upload is immutable. Trace results separate watermark, content, geometry, structure, and timeline signals.</p><button className="primary" disabled={!file} onClick={() => onRun(false)}>Preserve and analyze <span>→</span></button><button className="text-button demo-alt" onClick={() => onRun(true)}>Preview insufficient-evidence state</button></div></div>; }
 
