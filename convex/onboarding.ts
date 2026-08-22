@@ -13,6 +13,11 @@ import {
 const invitationRole = v.union(v.literal("viewer"), v.literal("issuer"), v.literal("investigator"));
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+async function auditHash(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** Authenticated users learn whether they have a membership without exposing any other tenant data. */
 export const accessStatus = query({
   args: {},
@@ -40,7 +45,7 @@ export const createOrganization = mutation({
     const now = Date.now();
     const organizationId = await ctx.db.insert("organizations", { name, slug, createdAt: now });
     const userId = await ctx.db.insert("users", { orgId: organizationId, authSubject: identity.subject, displayName, email, role: "admin", status: "active", createdAt: now });
-    await writeAuditEvent(ctx, { orgId: organizationId, actorId: userId, action: "organization.created", entityType: "organization", entityId: organizationId, detailsHash: slug });
+    await writeAuditEvent(ctx, { orgId: organizationId, actorId: userId, action: "organization.created", entityType: "organization", entityId: organizationId, detailsHash: await auditHash(slug) });
     return { organizationId, userId };
   },
 });
@@ -58,7 +63,7 @@ export const createInvitation = mutation({
     if (pending.length && pending[0].expiresAt > Date.now()) throw new Error("INVITATION_ALREADY_PENDING");
     const now = Date.now();
     const invitationId = await ctx.db.insert("organizationInvitations", { orgId: actor.orgId, email, role: args.role, invitedBy: actor._id, status: "pending", createdAt: now, expiresAt: now + INVITATION_TTL_MS });
-    await writeAuditEvent(ctx, { orgId: actor.orgId, actorId: actor._id, action: "organization.invitation_created", entityType: "organizationInvitation", entityId: invitationId, detailsHash: email });
+    await writeAuditEvent(ctx, { orgId: actor.orgId, actorId: actor._id, action: "organization.invitation_created", entityType: "organizationInvitation", entityId: invitationId, detailsHash: await auditHash(email) });
     return { invitationId, expiresAt: now + INVITATION_TTL_MS };
   },
 });
@@ -93,7 +98,7 @@ export const claimInvitation = mutation({
     const now = Date.now();
     const userId = await ctx.db.insert("users", { orgId: invitation.orgId, authSubject: identity.subject, displayName, email, role: invitation.role, status: "active", createdAt: now });
     await ctx.db.patch(invitation._id, { status: "accepted", acceptedAt: now, acceptedUserId: userId });
-    await writeAuditEvent(ctx, { orgId: invitation.orgId, actorId: userId, action: "organization.invitation_claimed", entityType: "organizationInvitation", entityId: invitation._id, detailsHash: invitation.email });
+    await writeAuditEvent(ctx, { orgId: invitation.orgId, actorId: userId, action: "organization.invitation_claimed", entityType: "organizationInvitation", entityId: invitation._id, detailsHash: await auditHash(invitation.email) });
     return { organizationId: organization._id, userId, role: invitation.role };
   },
 });
