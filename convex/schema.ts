@@ -52,7 +52,8 @@ export default defineSchema({
     orgId: v.id("organizations"), userId: v.id("users"), traceHandle: v.string(), routeScope: v.string(), profileId: v.string(),
     epoch: v.number(), startedAt: v.number(), expiresAt: v.number(), lastSeenAt: v.number(), tileStorageId: v.optional(v.id("_storage")),
   }).index("by_traceHandle", ["traceHandle"]).index("by_route_time", ["orgId", "routeScope", "startedAt"])
-    .index("by_user_time", ["userId", "startedAt"]),
+    .index("by_user_time", ["userId", "startedAt"])
+    .index("by_org_profile_started", ["orgId", "profileId", "startedAt"]),
   jobs: defineTable({
     orgId: v.id("organizations"), jobKey: v.string(), type: v.string(), inputStorageId: v.optional(v.id("_storage")),
     outputStorageId: v.optional(v.id("_storage")), issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")), webSessionId: v.optional(v.id("webSessions")),

@@ -76,20 +76,36 @@ export const getWorkerInput = mutation({
     const inputUrl = job.inputStorageId ? await ctx.storage.getUrl(job.inputStorageId) : null;
     if (job.type !== "web_tile" && !inputUrl) throw new Error("INPUT_NOT_FOUND");
     if (job.type === "web_tile" && !webSession) throw new Error("WEB_SESSION_NOT_FOUND");
-    const issuances = traceCase
+    const issuanceCandidates = traceCase && profile?.carrier !== "screen"
       ? await ctx.db.query("issuances").withIndex("by_org_profile", (q) => q.eq("orgId", traceCase.orgId).eq("profileId", job.profileId)).take(100)
       : [];
-    const candidates = await Promise.all(issuances
-      .filter((candidate) => candidate.status === "ready" && candidate.wmCode !== undefined)
+    const webSessionCandidates = traceCase && profile?.carrier === "screen"
+      ? await ctx.db.query("webSessions").withIndex("by_org_profile_started", (q) => q.eq("orgId", traceCase.orgId).eq("profileId", job.profileId)).order("desc").take(100)
+      : [];
+    const issuanceBindings = await Promise.all(issuanceCandidates
+      .filter((candidate) => candidate.status === "ready")
       .map(async (candidate) => {
         const candidateJob = candidate.jobId ? await ctx.db.get(candidate.jobId) : null;
         return {
           issuanceId: candidate._id,
           traceHandle: candidate.traceHandle,
-          wmCode: candidate.wmCode,
+          scope: "issuance",
+          createdAt: candidate.issuedAt,
+          wmCode: candidate.wmCode ?? null,
           outputSha256: candidateJob?.result?.outputSha256 ?? null,
         };
       }));
+    const webSessionBindings = webSessionCandidates
+      .filter((candidate) => candidate.tileStorageId !== undefined && candidate.expiresAt > now)
+      .map((candidate) => ({
+        webSessionId: candidate._id,
+        traceHandle: candidate.traceHandle,
+        scope: "web_session",
+        createdAt: candidate.startedAt,
+        wmCode: null,
+        outputSha256: null,
+      }));
+    const candidates = [...issuanceBindings, ...webSessionBindings];
     return {
       inputUrl,
       mime: version?.mime ?? traceCase?.evidenceMime ?? "image/png",
