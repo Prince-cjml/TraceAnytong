@@ -138,3 +138,21 @@ def test_profile_configuration_rejects_version_drift_and_keeps_key_internal() ->
     assert outcome.status == "failed"
     assert client.failed == ("PROFILE_CONFIGURATION_ERROR", False)
     assert client.completed is None
+
+
+def test_integral_convex_json_wm_code_is_normalized_before_personalization() -> None:
+    """Convex HTTP encodes its numeric values as Python floats."""
+    client = FakeClient(png_bytes())
+    original_input = client.input
+
+    def float_code(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload["wmCode"] = 42.0
+        return payload
+
+    client.input = float_code  # type: ignore[method-assign]
+    outcome = runner_for(client).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.completed is not None
+    assert client.completed["result"]["carrierEvidence"]["raw"]["wmCode"] == 42

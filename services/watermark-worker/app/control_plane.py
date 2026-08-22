@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
 import httpx
@@ -35,7 +36,10 @@ class ConvexWorkerClient:
             raise ValueError("worker_token is required")
         self._url = deployment_url.rstrip("/")
         self._token = worker_token
-        self._client = client or httpx.Client(timeout=30.0)
+        # Worker connectivity must not silently inherit a developer-machine SOCKS
+        # proxy. Deployments that require one can opt in explicitly.
+        trust_env = os.getenv("WORKER_HTTP_TRUST_ENV", "").lower() in {"1", "true", "yes"}
+        self._client = client or httpx.Client(timeout=30.0, trust_env=trust_env)
 
     def close(self) -> None:
         self._client.close()

@@ -31,6 +31,16 @@ def test_control_plane_errors_remain_typed() -> None:
         client.create_upload_url()
 
 
+def test_client_does_not_inherit_ambient_proxy_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "socks5://127.0.0.1:1080")
+    monkeypatch.delenv("WORKER_HTTP_TRUST_ENV", raising=False)
+    client = ConvexWorkerClient("https://joyous-anaconda-773.convex.cloud", "test-token")
+    try:
+        assert client._client._trust_env is False
+    finally:
+        client.close()
+
+
 def test_direct_worker_transfers_keep_storage_urls_outside_mutation_payloads() -> None:
     requests: list[httpx.Request] = []
 

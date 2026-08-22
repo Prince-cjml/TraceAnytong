@@ -149,6 +149,26 @@ class JobRunner:
         }
         return f"{job.job_id}{extensions.get(mime, '')}"
 
+    @staticmethod
+    def _wm_code(payload: dict, mime: str) -> int | None:
+        """Normalize Convex JSON numbers without weakening issuance validation.
+
+        Convex's HTTP JSON endpoint represents numbers as Python ``float`` on
+        the worker side.  Image codes are allocated server-side as unsigned
+        32-bit integers, so an integral float is safe to recover here; a
+        fractional value, boolean, or absent code remains invalid.
+        """
+        value = payload.get("wmCode")
+        if value is None and not mime.startswith("image/"):
+            return None
+        if isinstance(value, bool):
+            raise InputIntegrityError("image issuance has an invalid wmCode")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        raise InputIntegrityError("image issuance is missing its server-mapped wmCode")
+
     def _result(self, personalized: PersonalizationResult, profile: CarrierProfile, artifact: Artifact) -> dict:
         # Deliberately select safe, explainable fields. CarrierProfile.secret is never serialized.
         return {
@@ -195,9 +215,7 @@ class JobRunner:
             if expected_sha is not None and expected_sha != actual_sha:
                 raise InputIntegrityError("leased input SHA-256 does not match source version")
             identity = self._identity(payload)
-            wm_code = payload.get("wmCode")
-            if mime.startswith("image/") and not isinstance(wm_code, int):
-                raise InputIntegrityError("image issuance is missing its server-mapped wmCode")
+            wm_code = self._wm_code(payload, mime)
             profile = self.settings.profile_for(job.profile_id, identity.profile_version, self._env)
             source = Artifact(source_bytes, mime, self._filename(mime, job))
             personalized = self.registry.for_mime(mime).personalize(source, identity, profile, wm_code=wm_code)

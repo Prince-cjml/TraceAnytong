@@ -90,7 +90,7 @@ def detect_screen_candidate(payload: CandidatePayload) -> dict:
     return {"carrierEvidence": asdict(evidence)}
 
 
-@app.post("/v1/worker/run-once")
+@app.post("/v1/worker/run-once", response_model=None)
 def run_worker_once(request: Request) -> dict | JSONResponse:
     """Run one lease-safe job when the service-local trigger token is configured."""
     settings = WorkerSettings.from_env()
