@@ -20,6 +20,11 @@ const nav: { id: View; label: string; icon: string }[] = [
 
 type LiveTraceCase = { state: "queued" | "processing" | "complete" | "failed"; candidates: TraceCandidate[] };
 type TraceSource = "live" | "demo";
+type LiveWorkspaceIdentity = { organizationName: string; memberDisplayName: string; openTraceCases?: string };
+
+export function workspaceInitials(label: string): string {
+  return label.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
+}
 
 export function traceResultCopy(decision: Decision) {
   if (decision === "HIGH") return {
@@ -69,6 +74,7 @@ class LiveWorkspaceBoundary extends Component<{ initialView: View; traceCaseId?:
 function LiveWorkspace({ initialView, traceCaseId }: { initialView: View; traceCaseId?: string }) {
   const [activeCaseId, setActiveCaseId] = useState(traceCaseId);
   const result = useQuery(api.documents.list, {});
+  const dashboard = useQuery((api as any).dashboard.getSummary, {}) as { organizationName: string; memberDisplayName: string; traceCases: null | { open: { value: number; capped: boolean } } } | undefined;
   const traceCase = useQuery(api.traceCases.get, activeCaseId ? { caseId: activeCaseId as Id<"traceCases"> } : "skip");
   const documentState = dataState({ enabled: true, loading: result === undefined, data: result ? mapDocuments(result) : undefined, fallback: documents });
   const liveTrace = useMemo<LiveTraceCase | undefined>(() => traceCase ? { state: traceCase.state, candidates: mapCaseCandidates(traceCase.candidates) } : undefined, [traceCase]);
@@ -76,18 +82,22 @@ function LiveWorkspace({ initialView, traceCaseId }: { initialView: View; traceC
     setActiveCaseId(caseId);
     window.history.pushState({}, "", `/trace?caseId=${encodeURIComponent(caseId)}`);
   };
-  return <WorkspaceShell initialView={initialView} documentState={documentState} liveMode liveTrace={liveTrace} liveUploader={<TraceEvidenceUploader onCaseCreated={openCase} />} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} />;
+  const identity = dashboard ? { organizationName: dashboard.organizationName, memberDisplayName: dashboard.memberDisplayName, openTraceCases: dashboard.traceCases ? `${dashboard.traceCases.open.value}${dashboard.traceCases.open.capped ? "+" : ""}` : undefined } satisfies LiveWorkspaceIdentity : undefined;
+  return <WorkspaceShell initialView={initialView} documentState={documentState} liveMode liveIdentity={identity} liveTrace={liveTrace} liveUploader={<TraceEvidenceUploader onCaseCreated={openCase} />} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} />;
 }
 
-function WorkspaceShell({ initialView, documentState, liveMode = false, liveTrace, liveUploader, liveDocumentIntake, liveOnboarding }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode }) {
+function WorkspaceShell({ initialView, documentState, liveMode = false, liveIdentity, liveTrace, liveUploader, liveDocumentIntake, liveOnboarding }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveIdentity?: LiveWorkspaceIdentity; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode }) {
   const [view, setView] = useState<View>(initialView);
   const [issueOpen, setIssueOpen] = useState(false);
   const [traceState, setTraceState] = useState<"upload" | "processing" | "result" | "insufficient">("upload");
   const [selected, setSelected] = useState<TraceCandidate>(traceCandidates[0]);
   const title = nav.find((item) => item.id === view)?.label ?? "Overview";
+  const organizationName = liveMode ? liveIdentity?.organizationName ?? "Loading workspace…" : "Northstar Bio";
+  const memberName = liveMode ? liveIdentity?.memberDisplayName ?? "Loading member…" : "Mara Klein";
+  const traceBadge = liveMode ? liveIdentity?.openTraceCases : "3";
   return <main className="app-shell">
-    <aside className="sidebar"><a className="brand" href="/"><i>t</i><span>trace<span>any</span>tong</span></a><div className="org"><span className="org-mark">NB</span><span><b>Northstar Bio</b><small>Forensics workspace</small></span><button aria-label="Switch workspace">⌄</button></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}{item.id === "trace" && <em>3</em>}</button>)}</nav><div className="sidebar-foot"><div className="profile"><span>MK</span><div><b>Mara Klein</b><small>Investigator</small></div><button>···</button></div></div></aside>
-    <section className="stage"><header className="topbar"><div><p className="crumb">Northstar Bio <span>/</span> {title}</p><h1>{view === "trace" ? "Trace console" : title}</h1></div><div className="top-actions"><button className="icon-button" aria-label="Notifications">♧<b /></button><button className="avatar">MK</button></div></header>
+    <aside className="sidebar"><a className="brand" href="/"><i>t</i><span>trace<span>any</span>tong</span></a><div className="org"><span className="org-mark">{workspaceInitials(organizationName)}</span><span><b>{organizationName}</b><small>Forensics workspace</small></span><button aria-label="Switch workspace">⌄</button></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}{item.id === "trace" && traceBadge && <em>{traceBadge}</em>}</button>)}</nav><div className="sidebar-foot"><div className="profile"><span>{workspaceInitials(memberName)}</span><div><b>{memberName}</b><small>{liveIdentity ? "Authenticated member" : "Investigator"}</small></div><button>···</button></div></div></aside>
+    <section className="stage"><header className="topbar"><div><p className="crumb">{organizationName} <span>/</span> {title}</p><h1>{view === "trace" ? "Trace console" : title}</h1></div><div className="top-actions"><button className="icon-button" aria-label="Notifications">♧<b /></button><button className="avatar">{workspaceInitials(memberName)}</button></div></header>
       {view === "overview" && <Overview onNavigate={setView} documentState={documentState} liveMode={liveMode} />}
       {view === "documents" && <Documents onIssue={() => setIssueOpen(true)} documentState={documentState} liveDocumentIntake={liveDocumentIntake} />}
       {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveTrace={liveTrace} liveUploader={liveUploader} />}

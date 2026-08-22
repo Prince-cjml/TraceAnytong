@@ -2,7 +2,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 export type Role = "viewer" | "issuer" | "investigator" | "admin";
 type AuthCtx = QueryCtx | MutationCtx;
-type UserRecord = { _id: any; orgId: any; role: Role; status: "active" | "disabled" };
+type UserRecord = { _id: any; orgId: any; role: Role; status: "active" | "disabled"; displayName: string };
 export type AuthenticatedIdentity = { subject: string; email?: string };
 
 export async function currentIdentity(ctx: AuthCtx): Promise<AuthenticatedIdentity> {

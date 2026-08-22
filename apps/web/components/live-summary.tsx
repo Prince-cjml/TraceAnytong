@@ -7,6 +7,8 @@ import { api } from "../../../convex/_generated/api";
 export type BoundedCount = { value: number; capped: boolean };
 
 export type DashboardSummary = {
+  organizationName?: string;
+  memberDisplayName?: string;
   role: string;
   sourceDocuments: BoundedCount;
   activeOwnSessions: BoundedCount;

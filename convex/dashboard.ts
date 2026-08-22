@@ -1,4 +1,5 @@
 import { query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { currentUser } from "./auth";
 import { activeTraceCaseCount, boundedDashboardCount, DASHBOARD_COUNT_LIMIT } from "./dashboardRules";
 
@@ -13,7 +14,8 @@ export const getSummary = query({
   handler: async (ctx) => {
     const user = await currentUser(ctx);
     const now = Date.now();
-    const [documents, ownSessions, traceCases] = await Promise.all([
+    const [organization, documents, ownSessions, traceCases] = await Promise.all([
+      ctx.db.get(user.orgId as Id<"organizations">),
       ctx.db.query("documents").withIndex("by_org_updated", (q) => q.eq("orgId", user.orgId)).take(scanLimit),
       ctx.db.query("webSessions").withIndex("by_user_time", (q) => q.eq("userId", user._id)).order("desc").take(scanLimit),
       user.role === "investigator" || user.role === "admin"
@@ -22,6 +24,8 @@ export const getSummary = query({
     ]);
     const activeSessions = ownSessions.filter((session) => session.expiresAt > now);
     return {
+      organizationName: organization?.name ?? "Organization",
+      memberDisplayName: user.displayName,
       role: user.role,
       sourceDocuments: boundedDashboardCount(documents.length),
       activeOwnSessions: boundedDashboardCount(activeSessions.length),

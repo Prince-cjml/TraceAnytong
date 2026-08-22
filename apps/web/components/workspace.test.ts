@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { traceResultCopy } from "./workspace";
+import { traceResultCopy, workspaceInitials } from "./workspace";
 
 describe("trace result presentation", () => {
   it("keeps an insufficient decision explicitly non-attributive", () => {
@@ -15,5 +15,13 @@ describe("trace result presentation", () => {
 
     expect(copy.body).toMatch(/immutable profile threshold/i);
     expect(copy.posture).toBe("Attribution threshold met");
+  });
+});
+
+describe("workspace identity display", () => {
+  it("derives compact initials without retaining fixture identity data", () => {
+    expect(workspaceInitials("Northstar Bio")).toBe("NB");
+    expect(workspaceInitials("Mara")).toBe("M");
+    expect(workspaceInitials("   ")).toBe("?");
   });
 });
