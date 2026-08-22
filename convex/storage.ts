@@ -1,11 +1,26 @@
 import { mutation } from "./_generated/server";
+import { v } from "convex/values";
 import { requireRole } from "./auth";
+import { requireWorker } from "./workerAuth";
 
 /** Direct-to-Convex upload URL. Metadata mutations bind the resulting storage ID immutably. */
 export const createUploadUrl = mutation({
   args: {},
   handler: async (ctx) => {
     await requireRole(ctx, ["issuer", "investigator", "admin"]);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/**
+ * Direct upload URL for a currently configured external worker. The URL is
+ * intentionally created only after validating the worker's server credential;
+ * callers still need the relevant job lease to associate the uploaded object.
+ */
+export const createWorkerUploadUrl = mutation({
+  args: { workerToken: v.string() },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
     return await ctx.storage.generateUploadUrl();
   },
 });

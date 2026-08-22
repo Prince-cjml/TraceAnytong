@@ -3,10 +3,12 @@
 ## Local development
 
 1. Install Node 20+ and Python 3.11+.
-2. Copy `.env.example` to the relevant app/service environment file and configure Convex when deploying.
+2. Copy `.env.example` to the relevant app/service environment file. Run `npx convex dev --once` to bind the local project, generate `convex/_generated`, and deploy the schema to the configured development deployment.
 3. Run `npm install`, then `npm run dev` for the web app.
 4. In `services/watermark-worker`, create a virtual environment and run `pip install -e '.[dev]'`; start with `uvicorn app.main:app --reload`.
-5. Run `npm test` and `pytest` in the worker before changes are merged.
+5. Run `npx convex dev --once --typecheck enable`, `npm test`, and `pytest` in the worker before changes are merged.
+
+The UI reads `NEXT_PUBLIC_CONVEX_URL`; worker-only `CONVEX_URL` and `WORKER_TOKEN` must remain outside browser configuration. Set the worker token through `npx convex env set WORKER_TOKEN` and provide the same value only to the deployed worker service.
 
 ## Operational recovery
 

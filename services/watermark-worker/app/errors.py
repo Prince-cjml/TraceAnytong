@@ -30,3 +30,8 @@ class InvalidTraceIdentityError(WorkerError):
 class ProcessingError(WorkerError):
     code = "PROCESSING_ERROR"
     status_code = 500
+
+
+class ControlPlaneError(WorkerError):
+    code = "CONVEX_MUTATION_FAILED"
+    status_code = 502

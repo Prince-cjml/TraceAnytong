@@ -50,6 +50,40 @@ export const start = mutation({
   },
 });
 
+/**
+ * Returns a short-lived input URL only to the worker holding the active lease.
+ * This is deliberately a mutation: the worker credential must never become a
+ * browser-readable query argument.
+ */
+export const getWorkerInput = mutation({
+  args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs") },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const job = await ctx.db.get(args.jobId);
+    const now = Date.now();
+    if (!job || (job.state !== "leased" && job.state !== "running") || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) {
+      throw new Error("LEASE_NOT_ACTIVE");
+    }
+    const [issuance, traceCase] = await Promise.all([
+      job.issuanceId ? ctx.db.get(job.issuanceId) : null,
+      job.caseId ? ctx.db.get(job.caseId) : null,
+    ]);
+    const version = issuance ? await ctx.db.get(issuance.versionId) : null;
+    const inputUrl = await ctx.storage.getUrl(job.inputStorageId);
+    if (!inputUrl) throw new Error("INPUT_NOT_FOUND");
+    return {
+      inputUrl,
+      mime: version?.mime ?? traceCase?.evidenceMime ?? "application/octet-stream",
+      inputSha256: version?.sha256 ?? traceCase?.evidenceSha256 ?? null,
+      traceHandle: issuance?.traceHandle ?? null,
+      wmCode: issuance?.wmCode ?? null,
+      profileId: job.profileId,
+      issuanceId: job.issuanceId ?? null,
+      caseId: job.caseId ?? null,
+    };
+  },
+});
+
 export const heartbeat = mutation({
   args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs") },
   handler: async (ctx, args) => {

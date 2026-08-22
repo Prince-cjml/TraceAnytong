@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LEASE_DURATION_MS, completionDisposition, leaseIsActive, retryAt } from "./jobRules.ts";
+import { LEASE_DURATION_MS, completionDisposition, leaseIsActive, retryAt } from "./jobRules";
 
 test("expired leases are not active and retry timing is deterministic", () => {
   assert.equal(LEASE_DURATION_MS, 600_000);

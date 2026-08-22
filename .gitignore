@@ -1,6 +1,7 @@
 node_modules/
 .npm-cache/
 .next/
+*.tsbuildinfo
 .env*
 !.env.example
 __pycache__/
