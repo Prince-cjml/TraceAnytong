@@ -21,7 +21,7 @@ export default defineSchema({
     orgId: v.id("organizations"), authSubject: v.string(), displayName: v.string(),
     email: v.string(), role, status: userStatus, createdAt: v.number(),
   }).index("by_org_subject", ["orgId", "authSubject"]).index("by_authSubject", ["authSubject"])
-    .index("by_org_role", ["orgId", "role"]),
+    .index("by_org_role", ["orgId", "role"]).index("by_org_status", ["orgId", "status"]),
   documents: defineTable({
     orgId: v.id("organizations"), title: v.string(), classification: v.string(), ownerId: v.id("users"),
     currentVersionId: v.optional(v.id("documentVersions")), createdAt: v.number(), updatedAt: v.number(),

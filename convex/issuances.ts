@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireRole, randomTraceHandle, sameOrganization } from "./auth";
 import { writeAuditEvent } from "./audit";
+import { assertRecipientIsActive } from "./issuanceRules";
 
 async function sha256Hex(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
@@ -32,6 +33,7 @@ export const create = mutation({
       ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", args.profileId)).unique(),
     ]);
     if (!version || !recipient || !profile || profile.status !== "active") throw new Error("NOT_FOUND");
+    assertRecipientIsActive(recipient.status);
     sameOrganization(recipient.orgId, actor);
     const document = await ctx.db.get(version.documentId);
     if (!document) throw new Error("NOT_FOUND");
