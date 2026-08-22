@@ -27,3 +27,11 @@ jobs:
       - run: python -m pip install -e 'services/watermark-worker[dev]'
       - run: python -m pytest services/watermark-worker/tests bench/tests -q
       - run: python -m bench.runners.run --fixtures bench/fixtures --output bench/reports/ci
+      - name: Upload deterministic benchmark report
+        if: ${{ always() && hashFiles('bench/reports/ci/**') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-ci
+          path: bench/reports/ci
+          if-no-files-found: error
+          retention-days: 30

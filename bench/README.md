@@ -33,3 +33,8 @@ matrix tests local native-structure extraction on generated DOCX/PPTX and a
 fixed PDF metadata fixture; it does not benchmark Office rendering. Real
 screen/print-camera captures belong in `bench/datasets/physical/` when they are
 available.
+
+On GitHub Actions, the deterministic `bench/reports/ci` directory is published
+as the `benchmark-report-ci` workflow artifact and retained for 30 days. It is
+available from the individual workflow run's Artifacts section; generated
+reports remain ignored by Git and are not committed.
