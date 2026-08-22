@@ -2,6 +2,8 @@ node_modules/
 .npm-cache/
 .next/
 *.tsbuildinfo
+apps/web/AGENTS.md
+apps/web/CLAUDE.md
 .env*
 !.env.example
 __pycache__/
