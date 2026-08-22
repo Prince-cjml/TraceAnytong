@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireRole, sameOrganization } from "./auth";
 import { writeAuditEvent } from "./audit";
+import { assertSupportedArtifactMime } from "./artifactRules";
 
 const sha256 = v.string();
 
@@ -31,6 +32,7 @@ export const addVersion = mutation({
   },
   handler: async (ctx, args) => {
     assertSha256(args.sha256);
+    assertSupportedArtifactMime(args.mime);
     if (!Number.isInteger(args.size) || args.size < 0) throw new Error("INVALID_SIZE");
     const user = await requireRole(ctx, ["issuer", "admin"]);
     const document = await ctx.db.get(args.documentId);

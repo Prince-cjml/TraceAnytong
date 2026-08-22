@@ -12,6 +12,20 @@ type ProfileChoice = {
   detectorVersion: string;
 };
 
+const supportedMimeByExtension: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+const supportedMimes = new Set(Object.values(supportedMimeByExtension));
+
+export function normalizedArtifactMime(file: Pick<File, "name" | "type">): string | null {
+  const reportedMime = file.type.toLowerCase().split(";", 1)[0].trim();
+  if (reportedMime) return supportedMimes.has(reportedMime) ? reportedMime : null;
+  const extension = file.name.split(".").at(-1)?.toLowerCase();
+  return extension ? supportedMimeByExtension[extension] ?? null : null;
+}
+
 export function acceptedEvidenceLabel(mimeType: string) {
   if (mimeType.startsWith("image/")) return "Image evidence";
   if (mimeType === "application/pdf") return "PDF evidence";
@@ -38,6 +52,12 @@ export function TraceEvidenceUploader({ onCaseCreated }: { onCaseCreated: (caseI
 
   const selectFile = (event: ChangeEvent<HTMLInputElement>) => {
     const next = event.target.files?.[0] ?? null;
+    if (next && !normalizedArtifactMime(next)) {
+      setFile(null);
+      setStatus("error");
+      setError("Choose a JPEG, PNG, WebP, PDF, DOCX, or PPTX file.");
+      return;
+    }
     setFile(next);
     setError(null);
     setStatus("idle");
@@ -46,12 +66,14 @@ export function TraceEvidenceUploader({ onCaseCreated }: { onCaseCreated: (caseI
   const submit = async () => {
     if (!file || !selectedProfile) return;
     try {
+      const mime = normalizedArtifactMime(file);
+      if (!mime) throw new Error("Choose a JPEG, PNG, WebP, PDF, DOCX, or PPTX file.");
       setError(null);
       setStatus("hashing");
       const sha256 = await sha256Hex(file);
       setStatus("uploading");
       const uploadUrl = await createUploadUrl({});
-      const uploadResponse = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+      const uploadResponse = await fetch(uploadUrl, { method: "POST", headers: { "Content-Type": mime }, body: file });
       if (!uploadResponse.ok) throw new Error("Evidence upload was rejected by storage.");
       const { storageId } = await uploadResponse.json() as { storageId?: string };
       if (!storageId) throw new Error("Evidence upload did not return an immutable storage ID.");
@@ -59,7 +81,7 @@ export function TraceEvidenceUploader({ onCaseCreated }: { onCaseCreated: (caseI
       const caseId = await createCase({
         evidenceStorageId: storageId as any,
         evidenceSha256: sha256,
-        evidenceMime: file.type || "application/octet-stream",
+        evidenceMime: mime,
         profileId: selectedProfile.profileId,
         protocolVersion: selectedProfile.protocolVersion,
         detectorVersion: selectedProfile.detectorVersion,
@@ -75,7 +97,7 @@ export function TraceEvidenceUploader({ onCaseCreated }: { onCaseCreated: (caseI
   const busy = status === "hashing" || status === "uploading" || status === "creating";
   const statusText = status === "hashing" ? "Hashing immutable source…" : status === "uploading" ? "Preserving original evidence…" : status === "creating" ? "Creating trace case…" : null;
   return <div className="trace-upload live-uploader">
-    <div className="dropzone"><div className="upload-glyph">↑</div><h2>{file ? file.name : "Drop leak evidence here"}</h2><p>{file ? `${acceptedEvidenceLabel(file.type)} · the original will be hashed before processing.` : "Screenshots, photos, PDFs, Office documents and images are supported."}</p><div><label className="file-button">Choose file<input type="file" accept="image/*,application/pdf,.docx,.pptx" onChange={selectFile} disabled={busy} /></label><span>or drag and drop</span></div>{file && <div className="file-preview"><span>{file.type.split("/").at(-1)?.toUpperCase() || "FILE"}</span><b>{file.name}</b><small>{Math.ceil(file.size / 1024)} KB · SHA-256 will be calculated locally</small><button onClick={() => setFile(null)} disabled={busy}>×</button></div>}</div>
+    <div className="dropzone"><div className="upload-glyph">↑</div><h2>{file ? file.name : "Drop leak evidence here"}</h2><p>{file ? `${acceptedEvidenceLabel(normalizedArtifactMime(file) ?? file.type)} · the original will be hashed before processing.` : "JPEG, PNG, WebP, PDF, DOCX, and PPTX evidence is supported."}</p><div><label className="file-button">Choose file<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.docx,.pptx" onChange={selectFile} disabled={busy} /></label><span>or drag and drop</span></div>{file && <div className="file-preview"><span>{(normalizedArtifactMime(file) ?? file.type).split("/").at(-1)?.toUpperCase() || "FILE"}</span><b>{file.name}</b><small>{Math.ceil(file.size / 1024)} KB · SHA-256 will be calculated locally</small><button onClick={() => setFile(null)} disabled={busy}>×</button></div>}</div>
     <div className="trace-side-note"><span className="badge info">LIVE EVIDENCE INTAKE</span><h3>Preserve first. Process second.</h3><p>The upload is sent directly to immutable storage. Only an authorized investigator can create this case.</p><label className="profile-select">Detection profile<select value={selectedProfile?.profileId ?? ""} onChange={(event) => setProfileId(event.target.value)} disabled={busy || !profiles}>{profiles?.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.profileId} · {profile.carrier}</option>)}</select></label>{statusText && <p className="upload-status" role="status">{statusText}</p>}{error && <p className="upload-error" role="alert">{error}</p>}<button className="primary" disabled={!file || !selectedProfile || busy} onClick={submit}>{busy ? "Preserving evidence…" : "Preserve and analyze"} <span>→</span></button>{profiles === undefined && <p className="muted">Loading authorized profile registry…</p>}</div>
   </div>;
 }

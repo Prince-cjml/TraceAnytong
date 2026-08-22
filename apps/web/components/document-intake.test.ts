@@ -15,6 +15,7 @@ describe("document intake descriptor", () => {
   it("rejects artifact families absent from the worker adapter registry", () => {
     expect(documentIntakeDescriptor({ name: "notes.txt", type: "text/plain" })).toBeNull();
     expect(documentIntakeDescriptor({ name: "archive.zip", type: "application/zip" })).toBeNull();
+    expect(documentIntakeDescriptor({ name: "misleading.png", type: "image/gif" })).toBeNull();
   });
 });
 

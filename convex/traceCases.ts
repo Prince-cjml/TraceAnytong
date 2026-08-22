@@ -5,6 +5,7 @@ import { writeAuditEvent } from "./audit";
 import { requireWorker } from "./workerAuth";
 import { assertEvidenceScores, assertRawEvidence, assertTraceHandle, parseTraceThresholds, resolveTraceDecision } from "./traceDecisionRules";
 import { leaseIsActive } from "./jobRules";
+import { assertSupportedArtifactMime } from "./artifactRules";
 
 const decision = v.union(v.literal("attributed"), v.literal("insufficient"), v.literal("no_match"));
 
@@ -28,6 +29,7 @@ export const create = mutation({
   args: { evidenceStorageId: v.id("_storage"), evidenceSha256: v.string(), evidenceMime: v.string(), profileId: v.string(), suspectedDocumentId: v.optional(v.id("documents")), protocolVersion: v.string(), detectorVersion: v.string(), fingerprintVersion: v.string() },
   handler: async (ctx, args) => {
     assertSha256(args.evidenceSha256);
+    assertSupportedArtifactMime(args.evidenceMime);
     const reporter = await requireRole(ctx, ["investigator", "admin"]);
     if (args.suspectedDocumentId) {
       const document = await ctx.db.get(args.suspectedDocumentId);

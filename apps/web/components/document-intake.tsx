@@ -35,7 +35,9 @@ export function documentIntakeDescriptor(file: IntakeFile) {
   const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
   const inferredMime = MIME_BY_EXTENSION[extension];
   const browserMime = file.type.toLowerCase().split(";", 1)[0].trim();
-  const mime = SUPPORTED_MIME_TYPES.has(browserMime) ? browserMime : inferredMime;
+  // Browser MIME is authoritative when present; infer from a filename only
+  // when the browser genuinely supplied no type.
+  const mime = browserMime ? (SUPPORTED_MIME_TYPES.has(browserMime) ? browserMime : undefined) : inferredMime;
   if (!mime || !SUPPORTED_MIME_TYPES.has(mime)) return null;
   const title = file.name.replace(/\.[^.]+$/, "").trim() || "Untitled source";
   return {
