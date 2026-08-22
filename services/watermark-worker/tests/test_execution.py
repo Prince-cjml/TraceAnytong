@@ -8,6 +8,7 @@ from docx import Document
 from app.control_plane import ClaimedJob
 from app.errors import InputDownloadError, LeaseLostError
 from app.execution import JobRunner, WorkerSettings
+from app.carriers.screen_tile import ScreenTileCarrier
 from app.formats.registry import AdapterRegistry
 from app.models import Artifact, CarrierProfile, TraceIdentity
 
@@ -41,6 +42,19 @@ def structured_docx(trace_handle: str, profile_version: str) -> bytes:
         profile,
     )
     return personalized.artifact.data
+
+
+def screen_capture(trace_handle: str, profile_version: str) -> bytes:
+    profile = CarrierProfile("screen-v1", profile_version, "key-1", b"deterministic-screen-key", tile_size=64)
+    identity = TraceIdentity(trace_handle, "web_session", profile_version, 1_725_000_000)
+    tile = ScreenTileCarrier().tile_rgba(identity, profile)
+    capture = Image.new("RGBA", (256, 256), (235, 240, 250, 255))
+    for y in range(0, 256, 64):
+        for x in range(0, 256, 64):
+            capture.alpha_composite(tile, (x, y))
+    out = io.BytesIO()
+    capture.convert("RGB").save(out, "PNG")
+    return out.getvalue()
 
 
 def environment() -> dict[str, str]:
@@ -301,3 +315,34 @@ def test_trace_job_records_native_document_structure_as_insufficient_only() -> N
     assert client.trace_candidates[0]["structureScore"] >= 0.8
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
     assert client.trace_candidates[0]["rawEvidence"]["nativeStructure"]["raw"]["scoreMeaning"].endswith("not attribution")
+
+
+def test_trace_job_ranks_candidate_matched_screen_capture() -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    source = screen_capture(trace_handle, "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-screen", "trace-screen-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:screen")
+    original_input = client.input
+
+    def screen_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:screen", "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [{"webSessionId": "sessions:1", "traceHandle": trace_handle, "scope": "web_session", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": None}],
+        })
+        return payload
+
+    client.input = screen_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["webSessionId"] == "sessions:1"
+    assert client.trace_candidates[0]["watermarkScore"] >= 0.2
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert "candidateScores" in client.trace_candidates[0]["rawEvidence"]

@@ -113,6 +113,7 @@ export const getWorkerInput = mutation({
       traceHandle: issuance?.traceHandle ?? webSession?.traceHandle ?? null,
       wmCode: issuance?.wmCode ?? null,
       profileId: job.profileId,
+      profileCarrier: profile?.carrier ?? null,
       // The worker receives the exact immutable profile version and issuance time,
       // never a recipient identity.
       profileVersion: profile?.profileVersion ?? null,
