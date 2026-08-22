@@ -25,6 +25,8 @@ npx convex dev --once --typecheck enable
 
 Register the exact callback URI and browser origin in WorkOS before sign-in. Until the client ID and server-side WorkOS settings are present, keep the public gate `false`; the UI intentionally sends no token and protected control-plane calls remain fail-closed.
 
+After the first successful WorkOS sign-in, create the organization from the product onboarding screen using a unique slug. That account becomes the first active administrator. Administrators can invite viewer, issuer, and investigator roles; invitations are bound to the recipient's verified WorkOS email, expire after seven days, and are claimed once after sign-in. No role or organization is inferred from an email domain.
+
 ## Development demo bootstrap
 
 The Convex development deployment can create a deterministic, non-PII demo organization, four role fixtures, and three immutable watermark profiles. This is not an authentication bypass: it is disabled unless both a development-mode marker and a server environment secret exist. Do not configure either `DEV_BOOTSTRAP_ENVIRONMENT` or `DEV_BOOTSTRAP_SECRET` in production.

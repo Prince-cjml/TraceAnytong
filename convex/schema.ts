@@ -22,6 +22,11 @@ export default defineSchema({
     email: v.string(), role, status: userStatus, createdAt: v.number(),
   }).index("by_org_subject", ["orgId", "authSubject"]).index("by_authSubject", ["authSubject"])
     .index("by_org_role", ["orgId", "role"]).index("by_org_status", ["orgId", "status"]),
+  organizationInvitations: defineTable({
+    orgId: v.id("organizations"), email: v.string(), role: v.union(v.literal("viewer"), v.literal("issuer"), v.literal("investigator")),
+    invitedBy: v.id("users"), status: v.union(v.literal("pending"), v.literal("accepted"), v.literal("revoked")),
+    createdAt: v.number(), expiresAt: v.number(), acceptedAt: v.optional(v.number()), acceptedUserId: v.optional(v.id("users")),
+  }).index("by_email_status", ["email", "status"]).index("by_org_email_status", ["orgId", "email", "status"]),
   documents: defineTable({
     orgId: v.id("organizations"), title: v.string(), classification: v.string(), ownerId: v.id("users"),
     currentVersionId: v.optional(v.id("documentVersions")), createdAt: v.number(), updatedAt: v.number(),
