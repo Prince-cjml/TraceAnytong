@@ -36,7 +36,7 @@ export default defineSchema({
   }).index("by_version_page", ["versionId", "pageIndex"]),
   watermarkProfiles: defineTable({
     profileId: v.string(), carrier: v.union(v.literal("image"), v.literal("screen"), v.literal("structure")),
-    protocolVersion: v.string(), carrierVersion: v.string(), modelVersion: v.optional(v.string()), detectorVersion: v.string(),
+    protocolVersion: v.string(), profileVersion: v.string(), carrierVersion: v.string(), modelVersion: v.optional(v.string()), detectorVersion: v.string(),
     strength: v.number(), tileConfig: v.optional(v.any()), keyVersion: v.string(), thresholds: v.any(),
     status: v.union(v.literal("active"), v.literal("retired")), createdAt: v.number(),
   }).index("by_profileId", ["profileId"]),
@@ -49,7 +49,7 @@ export default defineSchema({
     .index("by_version_user", ["versionId", "userId"]).index("by_version_time", ["versionId", "issuedAt"]),
   webSessions: defineTable({
     orgId: v.id("organizations"), userId: v.id("users"), traceHandle: v.string(), routeScope: v.string(), profileId: v.string(),
-    epoch: v.number(), startedAt: v.number(), expiresAt: v.number(), lastSeenAt: v.number(),
+    epoch: v.number(), startedAt: v.number(), expiresAt: v.number(), lastSeenAt: v.number(), tileStorageId: v.optional(v.id("_storage")),
   }).index("by_traceHandle", ["traceHandle"]).index("by_route_time", ["orgId", "routeScope", "startedAt"])
     .index("by_user_time", ["userId", "startedAt"]),
   jobs: defineTable({

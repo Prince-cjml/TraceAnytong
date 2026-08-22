@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { requireRole, sameOrganization } from "./auth";
 import { writeAuditEvent } from "./audit";
 import { requireWorker } from "./workerAuth";
+import { assertEvidenceScores, assertRawEvidence, assertTraceHandle, parseTraceThresholds, resolveTraceDecision } from "./traceDecisionRules";
 
 const decision = v.union(v.literal("attributed"), v.literal("insufficient"), v.literal("no_match"));
 
@@ -31,7 +32,7 @@ export const recordCandidate = mutation({
   args: {
     workerToken: v.string(), caseId: v.id("traceCases"), traceHandle: v.string(), issuanceId: v.optional(v.id("issuances")), webSessionId: v.optional(v.id("webSessions")),
     watermarkScore: v.number(), watermarkMargin: v.number(), fingerprintScore: v.number(), geometricScore: v.number(), structureScore: v.number(), timelineScore: v.number(),
-    finalConfidence: v.number(), requestedDecision: decision, minimumConfidence: v.number(), minimumMargin: v.number(), explanation: v.string(), rawEvidence: v.any(), rank: v.number(),
+    finalConfidence: v.number(), requestedDecision: decision, explanation: v.string(), rawEvidence: v.any(), rank: v.number(),
     protocolVersion: v.string(), profileVersion: v.string(), carrierVersion: v.string(), detectorVersion: v.string(), fingerprintVersion: v.string(), keyVersion: v.string(),
     modelVersion: v.optional(v.string()), workerVersion: v.optional(v.string()),
   },
@@ -39,9 +40,27 @@ export const recordCandidate = mutation({
     requireWorker(args.workerToken);
     const traceCase = await ctx.db.get(args.caseId);
     if (!traceCase) throw new Error("NOT_FOUND");
-    const decisionValue = args.requestedDecision === "attributed" && args.finalConfidence >= args.minimumConfidence && args.watermarkMargin >= args.minimumMargin
-      ? "attributed" as const
-      : args.requestedDecision === "no_match" ? "no_match" as const : "insufficient" as const;
+    assertTraceHandle(args.traceHandle);
+    assertRawEvidence(args.rawEvidence);
+    assertEvidenceScores([
+      args.watermarkScore, args.watermarkMargin, args.fingerprintScore, args.geometricScore,
+      args.structureScore, args.timelineScore, args.finalConfidence,
+    ]);
+    if (!Number.isInteger(args.rank) || args.rank < 1) throw new Error("INVALID_RANK");
+    if ((args.issuanceId ? 1 : 0) + (args.webSessionId ? 1 : 0) !== 1) throw new Error("CANDIDATE_PROVENANCE_REQUIRED");
+
+    const issuance = args.issuanceId ? await ctx.db.get(args.issuanceId) : null;
+    const webSession = args.webSessionId ? await ctx.db.get(args.webSessionId) : null;
+    const provenance = issuance ?? webSession;
+    if (!provenance || provenance.orgId !== traceCase.orgId || provenance.traceHandle !== args.traceHandle) {
+      throw new Error("CANDIDATE_PROVENANCE_MISMATCH");
+    }
+    const profile = await ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", provenance.profileId)).unique();
+    if (!profile || profile.status !== "active" || profile.profileVersion !== args.profileVersion || profile.protocolVersion !== args.protocolVersion) {
+      throw new Error("CANDIDATE_PROFILE_MISMATCH");
+    }
+    const thresholds = parseTraceThresholds(profile.thresholds);
+    const decisionValue = resolveTraceDecision(args.requestedDecision, args.finalConfidence, args.watermarkMargin, thresholds);
     const candidateId = await ctx.db.insert("traceCandidates", {
       caseId: args.caseId, traceHandle: args.traceHandle, issuanceId: args.issuanceId, webSessionId: args.webSessionId,
       watermarkScore: args.watermarkScore, watermarkMargin: args.watermarkMargin, fingerprintScore: args.fingerprintScore,
@@ -75,6 +94,36 @@ export const get = query({
     sameOrganization(traceCase.orgId, user);
     const candidates = await ctx.db.query("traceCandidates").withIndex("by_case_rank", (q) => q.eq("caseId", args.caseId)).take(100);
     return { ...traceCase, candidates };
+  },
+});
+
+/** Investigator work queue with Convex's opaque, stable pagination cursor. */
+export const list = query({
+  args: { cursor: v.optional(v.string()), limit: v.number() },
+  handler: async (ctx, args) => {
+    const user = await requireRole(ctx, ["investigator", "admin"]);
+    if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100) throw new Error("INVALID_LIMIT");
+    const result = await ctx.db.query("traceCases")
+      .withIndex("by_org_created", (q) => q.eq("orgId", user.orgId))
+      .order("desc")
+      .paginate({ cursor: args.cursor ?? null, numItems: args.limit });
+    return {
+      cases: result.page.map((traceCase) => ({
+        _id: traceCase._id,
+        state: traceCase.state,
+        evidenceSha256: traceCase.evidenceSha256,
+        evidenceMime: traceCase.evidenceMime,
+        suspectedDocumentId: traceCase.suspectedDocumentId,
+        protocolVersion: traceCase.protocolVersion,
+        detectorVersion: traceCase.detectorVersion,
+        fingerprintVersion: traceCase.fingerprintVersion,
+        workerVersion: traceCase.workerVersion,
+        createdAt: traceCase.createdAt,
+        completedAt: traceCase.completedAt,
+      })),
+      continueCursor: result.continueCursor,
+      isDone: result.isDone,
+    };
   },
 });
 

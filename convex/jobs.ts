@@ -68,7 +68,10 @@ export const getWorkerInput = mutation({
       job.issuanceId ? ctx.db.get(job.issuanceId) : null,
       job.caseId ? ctx.db.get(job.caseId) : null,
     ]);
-    const version = issuance ? await ctx.db.get(issuance.versionId) : null;
+    const [version, profile] = await Promise.all([
+      issuance ? ctx.db.get(issuance.versionId) : null,
+      ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", job.profileId)).unique(),
+    ]);
     const inputUrl = await ctx.storage.getUrl(job.inputStorageId);
     if (!inputUrl) throw new Error("INPUT_NOT_FOUND");
     return {
@@ -78,6 +81,10 @@ export const getWorkerInput = mutation({
       traceHandle: issuance?.traceHandle ?? null,
       wmCode: issuance?.wmCode ?? null,
       profileId: job.profileId,
+      // The worker receives the exact immutable profile version and issuance time,
+      // never a recipient identity.
+      profileVersion: profile?.profileVersion ?? null,
+      createdAt: issuance?.issuedAt ?? null,
       issuanceId: job.issuanceId ?? null,
       caseId: job.caseId ?? null,
     };
