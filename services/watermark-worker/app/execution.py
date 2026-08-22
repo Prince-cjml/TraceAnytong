@@ -17,6 +17,7 @@ from typing import Literal, Mapping, Protocol
 from .control_plane import ClaimedJob, ConvexWorkerClient
 from .carriers.screen_tile import ScreenTileCarrier
 from .carriers.image_code import ImageCodeCarrier
+from .carriers.structure import NativeStructureCarrier
 from .errors import (
     ControlPlaneError,
     InputIntegrityError,
@@ -233,32 +234,69 @@ class JobRunner:
         actual_sha = hashlib.sha256(evidence_bytes).hexdigest()
         if expected_sha is not None and expected_sha != actual_sha:
             raise InputIntegrityError("trace evidence SHA-256 does not match the stored case")
-        if not mime.startswith("image/"):
-            raise InputIntegrityError("deterministic trace worker currently supports image evidence")
-        evidence = ImageCodeCarrier().detect(Artifact(evidence_bytes, mime), profile)
-        observed_code = evidence.raw.get("wmCode")
-        matches = [candidate for candidate in payload.get("candidates", []) if candidate.get("wmCode") == observed_code]
-        if isinstance(observed_code, int) and len(matches) == 1:
-            candidate = matches[0]
-            fingerprint_score = 1.0 if candidate.get("outputSha256") == actual_sha else 0.0
-            exact_output = fingerprint_score == 1.0
-            self.client.record_trace_candidate({
-                "caseId": case_id, "traceHandle": candidate["traceHandle"], "issuanceId": candidate["issuanceId"],
-                "watermarkScore": evidence.score, "watermarkMargin": 1.0, "fingerprintScore": fingerprint_score,
-                "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
-                "finalConfidence": 1.0 if exact_output else 0.0,
-                "requestedDecision": "attributed" if exact_output else "insufficient",
-                "explanation": "Unique server-mapped image code and exact derived fingerprint recovered from supplied evidence." if exact_output else "Image code recovered, but the deterministic fallback requires an exact derived fingerprint before attribution.",
-                "rawEvidence": {"imageCarrier": asdict(evidence), "candidateCount": len(payload.get("candidates", [])), "evidenceSha256": actual_sha},
-                "rank": 1, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
-                "carrierVersion": ImageCodeCarrier.carrier_version, "detectorVersion": evidence.detector_version,
-                "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
-                "modelVersion": "deterministic-fallback-v1", "workerVersion": self.settings.worker_version,
-            })
+        candidates = payload.get("candidates", [])
+        if not isinstance(candidates, list):
+            raise InputIntegrityError("trace job candidates are invalid")
+        if mime.startswith("image/"):
+            evidence = ImageCodeCarrier().detect(Artifact(evidence_bytes, mime), profile)
+            observed_code = evidence.raw.get("wmCode")
+            matches = [candidate for candidate in candidates if candidate.get("wmCode") == observed_code]
+            if isinstance(observed_code, int) and len(matches) == 1:
+                candidate = matches[0]
+                if not isinstance(candidate.get("issuanceId"), str):
+                    raise InputIntegrityError("image trace candidate is missing issuance provenance")
+                fingerprint_score = 1.0 if candidate.get("outputSha256") == actual_sha else 0.0
+                exact_output = fingerprint_score == 1.0
+                self.client.record_trace_candidate({
+                    "caseId": case_id, "traceHandle": candidate["traceHandle"], "issuanceId": candidate["issuanceId"],
+                    "watermarkScore": evidence.score, "watermarkMargin": 1.0, "fingerprintScore": fingerprint_score,
+                    "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
+                    "finalConfidence": 1.0 if exact_output else 0.0,
+                    "requestedDecision": "attributed" if exact_output else "insufficient",
+                    "explanation": "Unique server-mapped image code and exact derived fingerprint recovered from supplied evidence." if exact_output else "Image code recovered, but the deterministic fallback requires an exact derived fingerprint before attribution.",
+                    "rawEvidence": {"imageCarrier": asdict(evidence), "candidateCount": len(candidates), "evidenceSha256": actual_sha},
+                    "rank": 1, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
+                    "carrierVersion": ImageCodeCarrier.carrier_version, "detectorVersion": evidence.detector_version,
+                    "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
+                    "modelVersion": "deterministic-fallback-v1", "workerVersion": self.settings.worker_version,
+                })
+        else:
+            identities: list[TraceIdentity] = []
+            candidate_by_identity: dict[tuple[str, str], dict] = {}
+            for candidate in candidates:
+                try:
+                    identity = TraceIdentity(
+                        trace_handle=candidate["traceHandle"], scope=candidate["scope"],
+                        profile_version=profile.profile_version, created_at=int(candidate["createdAt"]),
+                    )
+                    identity.validate()
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise InputIntegrityError("trace job candidate identity is invalid") from exc
+                identities.append(identity)
+                candidate_by_identity[(identity.trace_handle, identity.scope)] = candidate
+            evidence = NativeStructureCarrier().detect(Artifact(evidence_bytes, mime), profile, candidates=identities)
+            structure_matches = [match for match in evidence.raw["candidateMatches"] if match["profileVersionMatches"]]
+            for rank, match in enumerate(structure_matches, start=1):
+                candidate = candidate_by_identity[(match["traceHandle"], match["scope"])]
+                provenance = {"issuanceId": candidate["issuanceId"]} if isinstance(candidate.get("issuanceId"), str) else {"webSessionId": candidate["webSessionId"]}
+                self.client.record_trace_candidate({
+                    "caseId": case_id, "traceHandle": match["traceHandle"], **provenance,
+                    "watermarkScore": 0.0, "watermarkMargin": 0.0,
+                    "fingerprintScore": 1.0 if candidate.get("outputSha256") == actual_sha else 0.0,
+                    "geometricScore": 0.0, "structureScore": evidence.score, "timelineScore": 1.0,
+                    "finalConfidence": 0.0, "requestedDecision": "insufficient",
+                    "explanation": "Native structure provenance matched an anonymous candidate, but structure evidence is never sufficient for attribution.",
+                    "rawEvidence": {"nativeStructure": asdict(evidence), "evidenceSha256": actual_sha},
+                    "rank": rank, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
+                    "carrierVersion": NativeStructureCarrier.carrier_version, "detectorVersion": evidence.detector_version,
+                    "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
+                    "workerVersion": self.settings.worker_version,
+                })
+            matches = structure_matches
         self.client.complete_trace_case(case_id)
         self.client.complete(self.settings.worker_id, job.job_id, None, None, {
             "workerVersion": self.settings.worker_version, "candidateCount": len(matches), "evidenceSha256": actual_sha,
-            "detectorVersion": ImageCodeCarrier.detector_version,
+            "detectorVersion": evidence.detector_version,
         })
         return RunOutcome("succeeded", job.job_id)
 

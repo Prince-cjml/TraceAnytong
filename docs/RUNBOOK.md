@@ -2,7 +2,7 @@
 
 ## Local development
 
-1. Install Node 20+ and Python 3.11+.
+1. Install Node 22.11+ and Python 3.11+. WorkOS AuthKit's current Next.js SDK requires Node 22.11 or newer.
 2. Copy `.env.example` to the relevant app/service environment file. Run `npx convex dev --once` to bind the local project, generate `convex/_generated`, and deploy the schema to the configured development deployment.
 3. Run `npm install`, then `npm run dev` for the web app.
 4. In `services/watermark-worker`, create a virtual environment and run `pip install -e '.[dev]'`; start with `uvicorn app.main:app --reload`.
@@ -13,6 +13,17 @@ The CI workflow runs the UI build, workspace tests, standalone Convex typecheck,
 The UI reads `NEXT_PUBLIC_CONVEX_URL`; worker-only `CONVEX_URL` and `WORKER_TOKEN` must remain outside browser configuration. Set the worker token through `npx convex env set WORKER_TOKEN` and provide the same value only to the deployed worker service.
 
 For every active profile that the worker is allowed to process, configure `WORKER_PROFILE_<PROFILE_ID>_SECRET_BASE64` and the exact immutable `WORKER_PROFILE_<PROFILE_ID>_VERSION`. Screen profiles are required for protected-page tiles: creating a web session queues a `web_tile` job, and the protected UI remains fail-closed until its worker-generated PNG has been bound to that session. The worker defaults to no inherited HTTP proxy; set `WORKER_HTTP_TRUST_ENV=true` only where an explicitly managed egress proxy is required.
+
+## WorkOS AuthKit
+
+Configure the same WorkOS client separately for each Convex deployment and its corresponding Next.js environment. `WORKOS_CLIENT_ID`, `WORKOS_API_KEY`, `WORKOS_COOKIE_PASSWORD`, and `WORKOS_REDIRECT_URI` stay on the Next.js host. Set `WORKOS_CLIENT_ID` on Convex, then deploy so [`convex/auth.config.ts`](../convex/auth.config.ts) can validate AuthKit JWTs against WorkOS's published JWKS. Set `NEXT_PUBLIC_WORKOS_AUTH_ENABLED=true` only after both sides are configured; its default `false` guarantees the browser sends no token and protected control-plane calls remain fail-closed.
+
+```powershell
+npx convex env set WORKOS_CLIENT_ID client_your_development_client
+npx convex dev --once --typecheck enable
+```
+
+Register the exact callback URI and browser origin in WorkOS before sign-in. Until the client ID and server-side WorkOS settings are present, keep the public gate `false`; the UI intentionally sends no token and protected control-plane calls remain fail-closed.
 
 ## Development demo bootstrap
 

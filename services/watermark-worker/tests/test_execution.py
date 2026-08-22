@@ -3,10 +3,13 @@ import hashlib
 import io
 
 from PIL import Image, PngImagePlugin
+from docx import Document
 
 from app.control_plane import ClaimedJob
 from app.errors import InputDownloadError, LeaseLostError
 from app.execution import JobRunner, WorkerSettings
+from app.formats.registry import AdapterRegistry
+from app.models import Artifact, CarrierProfile, TraceIdentity
 
 
 def png_bytes() -> bytes:
@@ -23,6 +26,21 @@ def watermarked_png(wm_code: int) -> bytes:
     metadata.add_text("TraceAnytong-wmCode", str(wm_code))
     image.save(out, "PNG", pnginfo=metadata)
     return out.getvalue()
+
+
+def structured_docx(trace_handle: str, profile_version: str) -> bytes:
+    document = Document()
+    document.add_paragraph("Trace evidence fixture")
+    source = io.BytesIO()
+    document.save(source)
+    profile = CarrierProfile("structure-v1", profile_version, "key-1", b"deterministic-structure-key", tile_size=64)
+    identity = TraceIdentity(trace_handle, "issuance", profile_version, 1_725_000_000)
+    personalized = AdapterRegistry().for_mime("application/vnd.openxmlformats-officedocument.wordprocessingml.document").personalize(
+        Artifact(source.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "fixture.docx"),
+        identity,
+        profile,
+    )
+    return personalized.artifact.data
 
 
 def environment() -> dict[str, str]:
@@ -251,3 +269,35 @@ def test_trace_job_never_requests_attribution_from_metadata_only_recovery() -> N
     assert outcome.status == "succeeded"
     assert client.trace_candidates[0]["fingerprintScore"] == 0.0
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+
+
+def test_trace_job_records_native_document_structure_as_insufficient_only() -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    source = structured_docx(trace_handle, "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_STRUCTURE_V1_SECRET_BASE64": base64.b64encode(b"deterministic-structure-key").decode(),
+        "WORKER_PROFILE_STRUCTURE_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_STRUCTURE_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-docx", "trace-docx-key", "trace", "storage:evidence", "structure-v1", 9_999_999, case_id="cases:docx")
+    original_input = client.input
+
+    def document_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:docx",
+            "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "profileId": "structure-v1",
+            "candidates": [{"issuanceId": "issuances:structure", "traceHandle": trace_handle, "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": hashlib.sha256(source).hexdigest()}],
+        })
+        return payload
+
+    client.input = document_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["structureScore"] >= 0.8
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert client.trace_candidates[0]["rawEvidence"]["nativeStructure"]["raw"]["scoreMeaning"].endswith("not attribution")
