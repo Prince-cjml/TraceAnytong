@@ -71,6 +71,24 @@ class ConvexWorkerClient:
             lease_expires_at=value["leaseExpiresAt"], issuance_id=value.get("issuanceId"), case_id=value.get("caseId"),
         )
 
+    def recover_expired_leases(self) -> int:
+        """Return expired leases to the server-controlled retry flow.
+
+        This remains a worker-token-only mutation.  It never grants the worker
+        visibility into jobs it does not subsequently lease.
+        """
+        value = self._mutation("jobs:recoverExpiredLeases", {})
+        if not isinstance(value, int) or value < 0:
+            raise ControlPlaneError("lease recovery returned an invalid count")
+        return value
+
+    def requeue_retries(self) -> int:
+        """Make due retryable jobs claimable again through the normal queue."""
+        value = self._mutation("jobs:requeueRetries", {})
+        if not isinstance(value, int) or value < 0:
+            raise ControlPlaneError("retry requeue returned an invalid count")
+        return value
+
     def start(self, worker_id: str, job_id: str) -> None:
         self._mutation("jobs:start", {"workerId": worker_id, "jobId": job_id})
 

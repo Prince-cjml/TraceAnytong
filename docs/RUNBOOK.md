@@ -5,14 +5,29 @@
 1. Install Node 22.11+ and Python 3.11+. WorkOS AuthKit's current Next.js SDK requires Node 22.11 or newer.
 2. Copy `.env.example` to the relevant app/service environment file. Run `npx convex dev --once` to bind the local project, generate `convex/_generated`, and deploy the schema to the configured development deployment.
 3. Run `npm install`, then `npm run dev` for the web app.
-4. In `services/watermark-worker`, create a virtual environment and run `pip install -e '.[dev]'`; start with `uvicorn app.main:app --reload`.
+4. In `services/watermark-worker`, create a virtual environment and run `pip install -e '.[dev]'`. Use `traceanytong-worker run` for the continuous lease-safe worker, or `uvicorn app.main:app --reload` when developing the health and explicit HTTP trigger endpoint.
 5. Run `npx convex dev --once --typecheck enable`, `npm test`, and `pytest` in the worker before changes are merged.
 
 The CI workflow runs the UI build, workspace tests, Convex typecheck plus pure contract tests, worker tests, and deterministic benchmark matrix on every pull request.
 
-The UI reads `NEXT_PUBLIC_CONVEX_URL`; worker-only `CONVEX_URL` and `WORKER_TOKEN` must remain outside browser configuration. Set the worker token through `npx convex env set WORKER_TOKEN` and provide the same value only to the deployed worker service.
+The UI reads `NEXT_PUBLIC_CONVEX_URL`; worker-only `WORKER_CONVEX_URL` and `WORKER_CONVEX_TOKEN` must remain outside browser configuration. Set the worker token through `npx convex env set WORKER_TOKEN` and provide the same value only to the deployed worker service.
 
 For every active profile that the worker is allowed to process, configure `WORKER_PROFILE_<PROFILE_ID>_SECRET_BASE64` and the exact immutable `WORKER_PROFILE_<PROFILE_ID>_VERSION`. Screen profiles are required for protected-page tiles: creating a web session queues a `web_tile` job, and the protected UI remains fail-closed until its worker-generated PNG has been bound to that session. The worker defaults to no inherited HTTP proxy; set `WORKER_HTTP_TRUST_ENV=true` only where an explicitly managed egress proxy is required.
+
+## Worker operation
+
+The production container starts `traceanytong-worker run`. It performs lease maintenance before each claim, processes successful jobs without an artificial delay, waits after idle or lease-loss outcomes, and applies exponential backoff after failed outcomes. A lease loss is recoverable and is never reported as a new failure by the daemon. After `WORKER_MAX_CONSECUTIVE_FAILURES` failed outcomes (default `5`), the process exits with status `1` so the platform can restart it instead of hot-looping.
+
+The bounded settings below are worker-only environment variables. Their defaults are suitable for a single general-purpose worker; tune them to the control-plane capacity, not to individual documents. The interval and initial failure backoff must be from `0.1` to `300` seconds, maximum failure backoff from `0.1` to `3600` seconds, and the failure limit from `1` to `100`.
+
+```text
+WORKER_IDLE_POLL_SECONDS=5
+WORKER_FAILURE_BACKOFF_SECONDS=5
+WORKER_MAX_FAILURE_BACKOFF_SECONDS=60
+WORKER_MAX_CONSECUTIVE_FAILURES=5
+```
+
+For a one-off diagnostic claim, use `traceanytong-worker run-once`. To run the HTTP health and explicitly token-protected `/v1/worker/run-once` endpoint instead, override the image command with `traceanytong-worker serve`; configure `WORKER_HTTP_TRIGGER_TOKEN` only for that mode. Do not expose worker Convex credentials, profile secrets, or the HTTP trigger token to the browser or application logs.
 
 ## WorkOS AuthKit
 

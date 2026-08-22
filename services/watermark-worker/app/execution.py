@@ -34,6 +34,8 @@ from .models import Artifact, CarrierEvidence, CarrierProfile, PersonalizationRe
 
 class WorkerClient(Protocol):
     def claim(self, worker_id: str, capabilities: list[str]) -> ClaimedJob | None: ...
+    def recover_expired_leases(self) -> int: ...
+    def requeue_retries(self) -> int: ...
     def start(self, worker_id: str, job_id: str) -> None: ...
     def heartbeat(self, worker_id: str, job_id: str) -> None: ...
     def input(self, worker_id: str, job_id: str) -> dict: ...
@@ -351,6 +353,18 @@ class JobRunner:
             # The job remains recoverable through the control plane's expired lease handling.
             return RunOutcome("failed", job.job_id, error.code)
         return RunOutcome("failed", job.job_id, error.code)
+
+    def maintain(self) -> dict[str, int]:
+        """Advance only server-authorized recovery states before claiming work.
+
+        The control plane decides which leases have expired and which retries
+        are due.  Running recovery before requeueing lets an expired lease
+        become claimable in the same maintenance pass without a local clock or
+        a browser-visible scheduler.
+        """
+        recovered = self.client.recover_expired_leases()
+        requeued = self.client.requeue_retries()
+        return {"recovered": recovered, "requeued": requeued}
 
     def run_once(self) -> RunOutcome:
         job = self.client.claim(self.settings.worker_id, list(self.settings.capabilities))

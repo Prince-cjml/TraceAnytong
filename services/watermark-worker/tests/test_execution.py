@@ -79,11 +79,21 @@ class FakeClient:
         self.failed: tuple[str, bool] | None = None
         self.trace_candidates: list[dict] = []
         self.completed_cases: list[str] = []
+        self.recovered = 0
+        self.requeued = 0
         self.job = ClaimedJob("jobs:1", "key", "personalize", "storage:1", "image-v1", 9_999_999)
 
     def claim(self, worker_id: str, capabilities: list[str]):
         self.calls.append("claim")
         return self.job
+
+    def recover_expired_leases(self) -> int:
+        self.calls.append("recover-expired")
+        return self.recovered
+
+    def requeue_retries(self) -> int:
+        self.calls.append("requeue-retries")
+        return self.requeued
 
     def start(self, worker_id: str, job_id: str) -> None:
         self.calls.append("start")
@@ -165,6 +175,15 @@ def test_run_once_personalizes_hashes_direct_uploads_and_keeps_secret_out_of_res
     assert result["carrierEvidence"]["raw"]["wmCode"] == 42
     assert base64.b64decode(env["WORKER_PROFILE_IMAGE_V1_SECRET_BASE64"]) not in str(result).encode()
     assert "secret" not in result
+
+
+def test_maintenance_uses_server_controlled_lease_recovery_before_retry_requeue() -> None:
+    client = FakeClient(png_bytes())
+    client.recovered = 2
+    client.requeued = 3
+
+    assert runner_for(client).maintain() == {"recovered": 2, "requeued": 3}
+    assert client.calls == ["recover-expired", "requeue-retries"]
 
 
 def test_download_failure_is_recorded_as_retryable_without_uploading() -> None:

@@ -85,3 +85,18 @@ def test_trace_writes_bind_worker_and_active_job_identifiers() -> None:
     assert b'"jobId":"jobs:trace"' in requests[0].content
     assert b'"path":"traceCases:recordCandidate"' in requests[0].content
     assert b'"path":"traceCases:complete"' in requests[1].content
+
+
+def test_recovery_calls_are_worker_token_gated_and_require_counts() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = b'"path":"jobs:recoverExpiredLeases"' if len(requests) == 1 else b'"path":"jobs:requeueRetries"'
+        assert path in request.content
+        return httpx.Response(200, json={"status": "success", "value": len(requests)})
+
+    client = ConvexWorkerClient("https://joyous-anaconda-773.convex.cloud", "test-token", httpx.Client(transport=httpx.MockTransport(handler)))
+    assert client.recover_expired_leases() == 1
+    assert client.requeue_retries() == 2
+    assert all(b'"workerToken":"test-token"' in request.content for request in requests)
