@@ -1,0 +1,41 @@
+{
+  "fixtures": [
+    {
+      "channel": "image",
+      "corpus": "acceptance",
+      "description": "Synthetic protected image; opaque fixture trace handle.",
+      "filename": "image-positive-01.png",
+      "fixture_id": "image-positive-01",
+      "sha256": "469b3aa906bb4f9ec10d93b720485ea608476c357f1572e58083fded736fd9b1",
+      "trace_handle": "3c2d8b2c7fca4d489e9d9b9f63c0a101"
+    },
+    {
+      "channel": "document",
+      "corpus": "acceptance",
+      "description": "Synthetic rendered document page; opaque fixture trace handle.",
+      "filename": "document-positive-01.png",
+      "fixture_id": "document-positive-01",
+      "sha256": "991ea35e233b76c9d60e5e45a0a092918213f29dd9c14ec32736f42d58adcc24",
+      "trace_handle": "ccf492d5ce9f4a9a8d6b7e2a31f40b91"
+    },
+    {
+      "channel": "image",
+      "corpus": "negative",
+      "description": "Unwatermarked synthetic image negative.",
+      "filename": "negative-image-01.png",
+      "fixture_id": "negative-image-01",
+      "sha256": "cc8bf6413f4a3f3d064d240b402acd31ae9e46fb67f9bfe2efb1d9beb9123089",
+      "trace_handle": null
+    },
+    {
+      "channel": "document",
+      "corpus": "negative",
+      "description": "Unwatermarked synthetic document-page negative.",
+      "filename": "negative-document-01.png",
+      "fixture_id": "negative-document-01",
+      "sha256": "1ed3cb53a70380fedf40b8785c20d661be9ab84308f34d5e4a889e61b01dad5f",
+      "trace_handle": null
+    }
+  ],
+  "schemaVersion": "0.1"
+}
