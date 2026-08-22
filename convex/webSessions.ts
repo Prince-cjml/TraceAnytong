@@ -2,7 +2,6 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { currentUser, requireRole, randomTraceHandle, sameOrganization } from "./auth";
 import { writeAuditEvent } from "./audit";
-import { requireWorker } from "./workerAuth";
 import { canAccessSessionTile } from "./webSessionRules";
 
 const MAX_SESSION_MS = 12 * 60 * 60 * 1000;
@@ -56,19 +55,6 @@ export const heartbeat = mutation({
     if (session.userId !== user._id) throw new Error("FORBIDDEN");
     if (session.expiresAt <= Date.now()) throw new Error("SESSION_EXPIRED");
     await ctx.db.patch(args.sessionId, { lastSeenAt: Date.now() });
-  },
-});
-
-/** Only the worker service can bind a prepared, storage-backed session tile. */
-export const finalizeTile = mutation({
-  args: { workerToken: v.string(), sessionId: v.id("webSessions"), tileStorageId: v.id("_storage") },
-  handler: async (ctx, args) => {
-    requireWorker(args.workerToken);
-    const session = await ctx.db.get(args.sessionId);
-    if (!session) throw new Error("NOT_FOUND");
-    const tileUrl = await ctx.storage.getUrl(args.tileStorageId);
-    if (!tileUrl) throw new Error("TILE_NOT_FOUND");
-    await ctx.db.patch(args.sessionId, { tileStorageId: args.tileStorageId, lastSeenAt: Date.now() });
   },
 });
 
