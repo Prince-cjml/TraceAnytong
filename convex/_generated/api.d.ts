@@ -23,6 +23,8 @@ import type * as jobs from "../jobs.js";
 import type * as onboarding from "../onboarding.js";
 import type * as onboardingRules from "../onboardingRules.js";
 import type * as storage from "../storage.js";
+import type * as traceCandidateSnapshotRules from "../traceCandidateSnapshotRules.js";
+import type * as traceCaseRules from "../traceCaseRules.js";
 import type * as traceCases from "../traceCases.js";
 import type * as traceDecisionRules from "../traceDecisionRules.js";
 import type * as users from "../users.js";
@@ -54,6 +56,8 @@ declare const fullApi: ApiFromModules<{
   onboarding: typeof onboarding;
   onboardingRules: typeof onboardingRules;
   storage: typeof storage;
+  traceCandidateSnapshotRules: typeof traceCandidateSnapshotRules;
+  traceCaseRules: typeof traceCaseRules;
   traceCases: typeof traceCases;
   traceDecisionRules: typeof traceDecisionRules;
   users: typeof users;

@@ -63,3 +63,5 @@ To remove the empty demo organization, repeat the shell variable setup above and
 ## Operational recovery
 
 Jobs have ten-minute leases. An expired running lease is returned to the retry queue. Preserve the original evidence object; create a new derived artifact rather than overwriting it. Investigate failed jobs from the Workers view and rerun only retryable jobs.
+
+Trace jobs created before immutable candidate snapshots were introduced fail closed with `TRACE_CANDIDATE_SNAPSHOT_MISSING`. Recreate the trace case instead of attempting to attach newly selected candidates to that historical job.
