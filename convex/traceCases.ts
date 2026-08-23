@@ -201,24 +201,41 @@ export const recordCandidate = mutation({
     }
     assertCandidateRankForCarrier(args.rank, profile.carrier, args.requestedDecision);
     const thresholds = parseTraceThresholds(profile.thresholds);
-    const decisionValue = resolveTraceDecision(args.requestedDecision, args.finalConfidence, args.watermarkMargin, thresholds);
+    // Content/version matching is not yet available for screen evidence.
+    // Preserve the uncollapsed correlation evidence, but never let a current
+    // worker (or a stale worker build) turn pattern correlation alone into an
+    // attribution. The immutable content-match implementation will lift this
+    // gate with independently validated page/fingerprint/geometry evidence.
+    const persistedArgs = profile.carrier === "screen" && args.requestedDecision === "attributed"
+      ? {
+        ...args,
+        requestedDecision: "insufficient" as const,
+        finalConfidence: 0,
+        explanation: "Screen correlation is retained, but attribution is withheld until immutable content-match evidence is available.",
+        rawEvidence: {
+          ...args.rawEvidence,
+          serverPolicy: { screenAttribution: "withheld_pending_content_match" },
+        },
+      }
+      : args;
+    const decisionValue = resolveTraceDecision(persistedArgs.requestedDecision, persistedArgs.finalConfidence, persistedArgs.watermarkMargin, thresholds);
     const existingAtRank = await ctx.db.query("traceCandidates")
       .withIndex("by_case_rank", (q: any) => q.eq("caseId", args.caseId).eq("rank", args.rank))
       .first();
     if (existingAtRank) {
-      if (isExactCandidateRetry(existingAtRank, args, decisionValue)) {
+      if (isExactCandidateRetry(existingAtRank, persistedArgs, decisionValue)) {
         return { candidateId: existingAtRank._id, decision: existingAtRank.decision };
       }
       throw new Error("DUPLICATE_CANDIDATE_RANK");
     }
     const candidateId = await ctx.db.insert("traceCandidates", {
       caseId: args.caseId, traceHandle: args.traceHandle, issuanceId: args.issuanceId, webSessionId: args.webSessionId,
-      watermarkScore: args.watermarkScore, watermarkMargin: args.watermarkMargin, fingerprintScore: args.fingerprintScore,
-      geometricScore: args.geometricScore, structureScore: args.structureScore, timelineScore: args.timelineScore,
-      finalConfidence: args.finalConfidence, decision: decisionValue, explanation: args.explanation, rawEvidence: args.rawEvidence, rank: args.rank,
-      protocolVersion: args.protocolVersion, profileVersion: args.profileVersion, carrierVersion: args.carrierVersion,
-      detectorVersion: args.detectorVersion, fingerprintVersion: args.fingerprintVersion, keyVersion: args.keyVersion,
-      modelVersion: args.modelVersion, workerVersion: args.workerVersion,
+      watermarkScore: persistedArgs.watermarkScore, watermarkMargin: persistedArgs.watermarkMargin, fingerprintScore: persistedArgs.fingerprintScore,
+      geometricScore: persistedArgs.geometricScore, structureScore: persistedArgs.structureScore, timelineScore: persistedArgs.timelineScore,
+      finalConfidence: persistedArgs.finalConfidence, decision: decisionValue, explanation: persistedArgs.explanation, rawEvidence: persistedArgs.rawEvidence, rank: persistedArgs.rank,
+      protocolVersion: persistedArgs.protocolVersion, profileVersion: persistedArgs.profileVersion, carrierVersion: persistedArgs.carrierVersion,
+      detectorVersion: persistedArgs.detectorVersion, fingerprintVersion: persistedArgs.fingerprintVersion, keyVersion: persistedArgs.keyVersion,
+      modelVersion: persistedArgs.modelVersion, workerVersion: persistedArgs.workerVersion,
     });
     if (traceCase.state === "queued") await ctx.db.patch(args.caseId, { state: "processing", workerVersion: args.workerVersion });
     return { candidateId, decision: decisionValue };

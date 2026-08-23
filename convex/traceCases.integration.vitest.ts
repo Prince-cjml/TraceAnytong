@@ -318,4 +318,31 @@ describe("trace case handlers", () => {
       caseId, traceJob!._id, SCREEN_TRACE_HANDLE, { webSessionId: seed.webSessionId }, 3, "insufficient",
     ))).rejects.toThrow("SCREEN_CANDIDATE_RANK_LIMIT");
   });
+
+  it("withholds a clear screen pattern attribution until immutable content matching exists", async () => {
+    const t = convexTest(schema, modules);
+    const seed = await seedScreenTraceFixture(t);
+    const investigator = t.withIdentity({ subject: "screen-integration-investigator" });
+    const caseId = await investigator.mutation(api.traceCases.create, {
+      evidenceStorageId: seed.caseEvidenceStorageId, evidenceSha256: "d".repeat(64), evidenceMime: "image/png",
+      profileId: SCREEN_PROFILE_ID, protocolVersion: PROTOCOL_VERSION, detectorVersion: DETECTOR_VERSION,
+      fingerprintVersion: FINGERPRINT_VERSION,
+    });
+    const traceJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === caseId));
+    expect(traceJob).toBeDefined();
+    await t.mutation(api.jobs.claim, {
+      workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", capabilities: ["cpu"],
+    });
+    await t.mutation(api.jobs.start, { workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId: traceJob!._id });
+
+    const result = await t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
+      caseId, traceJob!._id, SCREEN_ISSUANCE_TRACE_HANDLE, { issuanceId: seed.issuanceId }, 1, "attributed",
+    ));
+    expect(result).toMatchObject({ decision: "insufficient" });
+    const stored = await t.run(async (ctx) => ctx.db.query("traceCandidates").withIndex("by_case_rank", (q) => q.eq("caseId", caseId).eq("rank", 1)).unique());
+    expect(stored).toMatchObject({
+      decision: "insufficient", finalConfidence: 0,
+      rawEvidence: { serverPolicy: { screenAttribution: "withheld_pending_content_match" } },
+    });
+  });
 });

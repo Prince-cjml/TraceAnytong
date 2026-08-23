@@ -20,6 +20,8 @@ For direct leak evidence traced with a `screen` profile, PDF pages are rendered 
 
 Trace intake validates the profile/evidence pair before a job is queued: image profiles accept JPEG/PNG/WebP only; screen profiles accept screenshots plus PDF/DOCX/PPTX; structure profiles accept PDF/DOCX/PPTX only. If it returns `TRACE_PROFILE_MIME_MISMATCH`, choose a compatible immutable profile instead of retrying the same pair.
 
+Current screen-correlation results are intentionally recorded as `insufficient`, even when a repeated pattern produces a clear peak and candidate margin. The control plane retains that raw evidence, but withholds screen attribution until the immutable source-content/page matching layer is configured and verified. Image visual-code traces retain their separate frozen perceptual-fingerprint gate.
+
 After installing or upgrading LibreOffice, record the distribution/version in your worker deployment manifest, then run `pytest tests/test_office_renderer.py tests/test_execution.py -q` from `services/watermark-worker`. The tests mock the external process and do not require LibreOffice locally; the full `pytest` suite remains the required pre-merge check.
 
 The current image worker keeps its native metadata mapping and adds a deterministic CRC-protected visual `wmCode` fallback. It is measured on metadata-stripped images, controlled JPEG quality 60, and a 0.75 resize; it is not a neural detector and does not claim arbitrary crop, perspective, or camera recovery. A visual code is still only candidate evidence—the control plane requires the server mapping and normal fingerprint/threshold checks before attribution.
