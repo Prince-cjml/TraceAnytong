@@ -196,7 +196,7 @@ describe("control-plane public handlers", () => {
       const documentId = await ctx.db.insert("documents", { orgId, title: "Indexed source", classification: "internal", ownerId: issuerId, createdAt: now, updatedAt: now });
       const versionId = await ctx.db.insert("documentVersions", {
         documentId, sourceStorageId, sha256: "a".repeat(64), mime: "image/png", size: 20, fingerprintVersion: "sha256-prefix-v1", coarseFingerprint: "a".repeat(32),
-        contentIndexState: "queued", contentIndexVersion: "source-content-index-v1", createdAt: now,
+        contentIndexState: "processing", contentIndexVersion: "source-content-index-v1", createdAt: now,
       });
       const jobId = await ctx.db.insert("jobs", {
         orgId, jobKey: "content-index-job", type: "content_index", inputStorageId: sourceStorageId, versionId, contentIndexVersion: "source-content-index-v1",
@@ -220,6 +220,67 @@ describe("control-plane public handlers", () => {
     expect(persisted.version).toMatchObject({ contentIndexState: "ready", contentIndexManifestSha256: "c".repeat(64), pageCount: 1 });
     expect(persisted.pages).toHaveLength(1);
     expect(persisted.pages[0]).toMatchObject({ pageIndex: 0, dHash: "fedcba9876543210" });
+  });
+
+  it("binds content-index lifecycle and worker input to one immutable source version", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const now = Date.now();
+      const sourceStorageId = await ctx.storage.store(new Blob(["content-index source"]));
+      const orgId = await ctx.db.insert("organizations", { name: "Index lifecycle organization", slug: "index-lifecycle", createdAt: now });
+      const issuerId = await ctx.db.insert("users", { orgId, authSubject: "index-lifecycle-issuer", displayName: "Index lifecycle issuer", email: "index-lifecycle@fixture.invalid", role: "issuer", status: "active", createdAt: now });
+      const documentId = await ctx.db.insert("documents", { orgId, title: "Index lifecycle source", classification: "internal", ownerId: issuerId, createdAt: now, updatedAt: now });
+      const versionId = await ctx.db.insert("documentVersions", {
+        documentId, sourceStorageId, sha256: "a".repeat(64), mime: "image/png", size: 20, fingerprintVersion: "sha256-prefix-v1", coarseFingerprint: "a".repeat(32),
+        contentIndexState: "queued", contentIndexVersion: "source-content-index-v1", createdAt: now,
+      });
+      const jobId = await ctx.db.insert("jobs", {
+        orgId, jobKey: "content-index-lifecycle-job", type: "content_index", inputStorageId: sourceStorageId, versionId, contentIndexVersion: "source-content-index-v1",
+        profileId: "source-content-index-v1", state: "leased", workerClass: "cpu", leaseOwner: "content-index-lifecycle-worker", leaseExpiresAt: now + 60_000,
+        nextAttemptAt: now, attempts: 1, createdAt: now, updatedAt: now,
+      });
+      await ctx.db.patch(versionId, { contentIndexJobId: jobId });
+      return { jobId, versionId };
+    });
+
+    await expect(t.mutation(api.jobs.start, { workerToken: WORKER_TOKEN, workerId: "content-index-lifecycle-worker", jobId: fixture.jobId })).resolves.toBeNull();
+    const workerInput = await t.mutation(api.jobs.getWorkerInput, { workerToken: WORKER_TOKEN, workerId: "content-index-lifecycle-worker", jobId: fixture.jobId });
+    expect(Object.keys(workerInput).sort()).toEqual(["indexVersion", "inputSha256", "inputUrl", "maxPages", "mime", "versionId"]);
+    expect(workerInput).toMatchObject({ versionId: fixture.versionId, mime: "image/png", inputSha256: "a".repeat(64), indexVersion: "source-content-index-v1", maxPages: 200 });
+    expect(await t.run(async (ctx) => (await ctx.db.get(fixture.versionId))?.contentIndexState)).toBe("processing");
+
+    await expect(t.mutation(api.jobs.fail, {
+      workerToken: WORKER_TOKEN, workerId: "content-index-lifecycle-worker", jobId: fixture.jobId, error: "INDEXER_FAILED", retryable: false,
+    })).resolves.toBeNull();
+    expect(await t.run(async (ctx) => (await ctx.db.get(fixture.versionId))?.contentIndexState)).toBe("failed");
+  });
+
+  it("derives initial source byte metadata and enqueues exactly one index job when adding a version", async () => {
+    const t = convexTest(schema, modules);
+    const setup = await t.run(async (ctx) => {
+      const now = Date.now();
+      const sourceStorageId = await ctx.storage.store(new Blob(["new immutable source"]));
+      const orgId = await ctx.db.insert("organizations", { name: "Index enqueue organization", slug: "index-enqueue", createdAt: now });
+      const issuerId = await ctx.db.insert("users", { orgId, authSubject: "index-enqueue-issuer", displayName: "Index enqueue issuer", email: "index-enqueue@fixture.invalid", role: "issuer", status: "active", createdAt: now });
+      const documentId = await ctx.db.insert("documents", { orgId, title: "Index enqueue source", classification: "internal", ownerId: issuerId, createdAt: now, updatedAt: now });
+      return { sourceStorageId, documentId };
+    });
+    const issuer = t.withIdentity({ subject: "index-enqueue-issuer", email: "index-enqueue@fixture.invalid" });
+    const versionId = await issuer.mutation(api.documents.addVersion, {
+      documentId: setup.documentId, sourceStorageId: setup.sourceStorageId, sha256: "b".repeat(64), mime: "image/png", size: 20,
+      pageCount: 777, fingerprintVersion: "browser-controlled", coarseFingerprint: "browser-controlled",
+    });
+    const persisted = await t.run(async (ctx) => ({
+      version: await ctx.db.get(versionId),
+      allJobs: await ctx.db.query("jobs").collect(),
+    }));
+    expect(persisted.version).toMatchObject({
+      fingerprintVersion: "sha256-prefix-v1", coarseFingerprint: "b".repeat(32), contentIndexState: "queued", contentIndexVersion: "source-content-index-v1",
+    });
+    expect(persisted.version?.pageCount).toBeUndefined();
+    const indexJobs = persisted.allJobs.filter((job) => job.versionId === versionId && job.type === "content_index");
+    expect(indexJobs).toHaveLength(1);
+    expect(persisted.version?.contentIndexJobId).toEqual(indexJobs[0]._id);
   });
 
   it("recovers an expired active lease through the indexed recovery and retry path before it is claimable", async () => {

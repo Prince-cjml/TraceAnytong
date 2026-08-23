@@ -7,6 +7,7 @@ import { assertSupportedArtifactMime } from "./artifactRules";
 const sha256 = v.string();
 const SOURCE_CONTENT_INDEX_VERSION = "source-content-index-v1";
 const CONTENT_INDEX_PROFILE_ID = "source-content-index-v1";
+const SOURCE_BYTE_FINGERPRINT_VERSION = "sha256-prefix-v1";
 
 async function contentIndexJobKey(versionId: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`content-index|${versionId}|${SOURCE_CONTENT_INDEX_VERSION}`));
@@ -46,8 +47,15 @@ export const addVersion = mutation({
     if (!document) throw new Error("NOT_FOUND");
     sameOrganization(document.orgId, user);
     const now = Date.now();
+    // The browser supplies bytes and their claimed full digest for the worker
+    // to verify. It must not choose metadata that later looks like a trusted
+    // source index: the control plane names the initial byte fingerprint and
+    // deterministically derives its compact display prefix from that digest.
     const versionId = await ctx.db.insert("documentVersions", {
-      ...args, contentIndexState: "queued", contentIndexVersion: SOURCE_CONTENT_INDEX_VERSION, createdAt: now,
+      documentId: args.documentId, sourceStorageId: args.sourceStorageId, sha256: args.sha256,
+      mime: args.mime, size: args.size, fingerprintVersion: SOURCE_BYTE_FINGERPRINT_VERSION,
+      coarseFingerprint: args.sha256.slice(0, 32), contentIndexState: "queued",
+      contentIndexVersion: SOURCE_CONTENT_INDEX_VERSION, createdAt: now,
     });
     const contentIndexJobId = await ctx.db.insert("jobs", {
       orgId: user.orgId, jobKey: await contentIndexJobKey(String(versionId)), type: "content_index", inputStorageId: args.sourceStorageId,

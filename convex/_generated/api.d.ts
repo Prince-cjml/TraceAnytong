@@ -12,6 +12,7 @@ import type * as artifactRules from "../artifactRules.js";
 import type * as audit from "../audit.js";
 import type * as auth from "../auth.js";
 import type * as bootstrapFixtures from "../bootstrapFixtures.js";
+import type * as contentIndexRules from "../contentIndexRules.js";
 import type * as dashboard from "../dashboard.js";
 import type * as dashboardRules from "../dashboardRules.js";
 import type * as devBootstrap from "../devBootstrap.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   audit: typeof audit;
   auth: typeof auth;
   bootstrapFixtures: typeof bootstrapFixtures;
+  contentIndexRules: typeof contentIndexRules;
   dashboard: typeof dashboard;
   dashboardRules: typeof dashboardRules;
   devBootstrap: typeof devBootstrap;

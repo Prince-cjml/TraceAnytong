@@ -12,6 +12,7 @@ test("content index pages are dense, bounded, and PII-free", () => {
   assert.throws(() => assertContentIndexPages([{ ...page, pageIndex: 1 }], true), /INVALID_CONTENT_INDEX_PAGE/);
   assert.throws(() => assertContentIndexPages([{ ...page, dHash: "not-a-hash" }], true), /INVALID_CONTENT_INDEX_PAGE/);
   assert.throws(() => assertContentIndexPages([page], false), /UNINDEXED_CONTENT_MUST_NOT_HAVE_PAGES/);
+  assert.throws(() => assertContentIndexPages(Array.from({ length: 201 }, (_, pageIndex) => ({ ...page, pageIndex })), true), /INVALID_CONTENT_INDEX_PAGES/);
 });
 
 test("content index evidence rejects arbitrary identifiers and source text", () => {

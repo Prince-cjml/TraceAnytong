@@ -10,6 +10,25 @@ import { assertContentIndexEvidence, assertContentIndexPages, CONTENT_INDEX_PROF
 const workerClass = v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid"));
 const MAX_ATTEMPTS = 4;
 
+/**
+ * A content-index job is bound to exactly one immutable source version.
+ * Check every link before handing its source to a worker or changing the
+ * version lifecycle so a malformed/legacy job cannot attach evidence to a
+ * different source object.
+ */
+async function requireContentIndexVersionBinding(ctx: any, job: any): Promise<any> {
+  const version = job.versionId ? await ctx.db.get(job.versionId) : null;
+  if (!version
+    || version.contentIndexJobId !== job._id
+    || version.sourceStorageId !== job.inputStorageId
+    || job.profileId !== CONTENT_INDEX_PROFILE_ID
+    || job.contentIndexVersion !== CONTENT_INDEX_VERSION
+    || version.contentIndexVersion !== CONTENT_INDEX_VERSION) {
+    throw new Error("CONTENT_INDEX_JOB_INVALID");
+  }
+  return version;
+}
+
 /** Stable equality for an exact retry; storage IDs are represented as strings at this boundary. */
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -58,6 +77,11 @@ export const start = mutation({
     const job = await ctx.db.get(args.jobId);
     const now = Date.now();
     if (!job || job.state !== "leased" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    if (job.type === "content_index") {
+      const version = await requireContentIndexVersionBinding(ctx, job);
+      if (version.contentIndexState !== "queued") throw new Error("CONTENT_INDEX_STATE_INVALID");
+      await ctx.db.patch(version._id, { contentIndexState: "processing" });
+    }
     await ctx.db.patch(args.jobId, { state: "running", updatedAt: now });
   },
 });
@@ -77,14 +101,14 @@ export const getWorkerInput = mutation({
       throw new Error("LEASE_NOT_ACTIVE");
     }
     if (job.type === "content_index") {
-      const version = job.versionId ? await ctx.db.get(job.versionId) : null;
+      const version = await requireContentIndexVersionBinding(ctx, job);
       const inputUrl = job.inputStorageId ? await ctx.storage.getUrl(job.inputStorageId) : null;
-      if (!version || !inputUrl || job.profileId !== CONTENT_INDEX_PROFILE_ID || job.contentIndexVersion !== CONTENT_INDEX_VERSION || version.contentIndexVersion !== CONTENT_INDEX_VERSION) {
+      if (!inputUrl || (version.contentIndexState !== "queued" && version.contentIndexState !== "processing")) {
         throw new Error("CONTENT_INDEX_INPUT_INVALID");
       }
       return {
         inputUrl, mime: version.mime, inputSha256: version.sha256, versionId: job.versionId,
-        indexVersion: CONTENT_INDEX_VERSION, maxPages: 200, candidates: [],
+        indexVersion: CONTENT_INDEX_VERSION, maxPages: 200,
       };
     }
     const [issuance, traceCase, webSession] = await Promise.all([
@@ -176,8 +200,8 @@ export const completeContentIndex = mutation({
     requireWorker(args.workerToken);
     const job = await ctx.db.get(args.jobId);
     if (!job || job.type !== "content_index" || job.versionId !== args.versionId || job.profileId !== CONTENT_INDEX_PROFILE_ID || job.contentIndexVersion !== CONTENT_INDEX_VERSION) throw new Error("CONTENT_INDEX_JOB_INVALID");
-    const version = await ctx.db.get(args.versionId);
-    if (!version || version.sha256 !== args.sourceSha256 || args.indexVersion !== CONTENT_INDEX_VERSION || !/^[a-f0-9]{64}$/.test(args.manifestSha256) || args.warnings.length > 20 || args.warnings.some((warning) => warning.length > 500)) throw new Error("CONTENT_INDEX_RESULT_INVALID");
+    const version = await requireContentIndexVersionBinding(ctx, job);
+    if (version.sha256 !== args.sourceSha256 || args.indexVersion !== CONTENT_INDEX_VERSION || !/^[a-f0-9]{64}$/.test(args.manifestSha256) || args.warnings.length > 20 || args.warnings.some((warning) => warning.length > 500)) throw new Error("CONTENT_INDEX_RESULT_INVALID");
     assertContentIndexPages(args.pages.map((page) => ({ ...page, previewStorageId: String(page.previewStorageId), featureStorageId: page.featureStorageId ? String(page.featureStorageId) : undefined })), args.status === "indexed");
     assertContentIndexEvidence(args.rawEvidence);
     const completionPayload = {
@@ -192,6 +216,7 @@ export const completeContentIndex = mutation({
     }
     const now = Date.now();
     if (job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    if (version.contentIndexState !== "processing") throw new Error("CONTENT_INDEX_STATE_INVALID");
     for (const page of args.pages) await ctx.db.insert("versionPages", { versionId: args.versionId, ...page });
     await ctx.db.patch(args.versionId, {
       pageCount: args.pages.length, contentIndexState: "ready", contentIndexManifestStorageId: args.manifestStorageId,
@@ -216,7 +241,10 @@ export const fail = mutation({
     });
     if (job.issuanceId && !shouldRetry) await ctx.db.patch(job.issuanceId, { status: "failed" });
     if (job.caseId && !shouldRetry) await ctx.db.patch(job.caseId, { state: "failed", completedAt: now });
-    if (job.type === "content_index" && job.versionId && !shouldRetry) await ctx.db.patch(job.versionId, { contentIndexState: "failed" });
+    if (job.type === "content_index") {
+      const version = await requireContentIndexVersionBinding(ctx, job);
+      await ctx.db.patch(version._id, { contentIndexState: shouldRetry ? "queued" : "failed" });
+    }
   },
 });
 
@@ -230,6 +258,10 @@ export const recoverExpiredLeases = mutation({
       const jobs = await ctx.db.query("jobs").withIndex("by_state_leaseExpiresAt", (q) => q.eq("state", state).lte("leaseExpiresAt", now)).take(100);
       for (const job of jobs) {
         await ctx.db.patch(job._id, { state: "retryable", nextAttemptAt: now, leaseOwner: undefined, leaseExpiresAt: undefined, lastError: "LEASE_EXPIRED", updatedAt: now });
+        if (job.type === "content_index") {
+          const version = await requireContentIndexVersionBinding(ctx, job);
+          await ctx.db.patch(version._id, { contentIndexState: "queued" });
+        }
         recovered += 1;
       }
     }

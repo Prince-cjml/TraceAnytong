@@ -270,8 +270,9 @@ describe("trace case handlers", () => {
     const input = await t.mutation(api.jobs.getWorkerInput, {
       workerToken: WORKER_TOKEN, workerId: "integration-worker", jobId: traceJob!._id,
     });
+    const candidates = input.candidates ?? [];
 
-    expect(input.candidates).toEqual([{
+    expect(candidates).toEqual([{
       traceHandle: SNAPSHOTTED_TRACE_HANDLE, scope: "issuance", createdAt: 1_725_000_000_000,
       issuanceId: seed.candidateIssuanceId, wmCode: 42, outputSha256: OUTPUT_SHA256,
       outputFingerprint: {
@@ -279,9 +280,9 @@ describe("trace case handlers", () => {
         dHash: OUTPUT_DHASH, width: 640, height: 480,
       },
     }]);
-    expect(JSON.stringify(input.candidates)).not.toContain("recipient@integration.invalid");
-    expect(input.candidates[0]).not.toHaveProperty("email");
-    expect(input.candidates[0]).not.toHaveProperty("recipient");
+    expect(JSON.stringify(candidates)).not.toContain("recipient@integration.invalid");
+    expect(candidates[0]).not.toHaveProperty("email");
+    expect(candidates[0]).not.toHaveProperty("recipient");
 
     const firstCandidateArgs = candidateArgs(
       caseId, traceJob!._id, seed.candidateIssuanceId, SNAPSHOTTED_TRACE_HANDLE,
@@ -364,7 +365,8 @@ describe("trace case handlers", () => {
     const input = await t.mutation(api.jobs.getWorkerInput, {
       workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId: traceJob!._id,
     });
-    expect(input.candidates).toEqual([
+    const candidates = input.candidates ?? [];
+    expect(candidates).toEqual([
       {
         traceHandle: SCREEN_ISSUANCE_TRACE_HANDLE, scope: "issuance", createdAt: FIXTURE_TIME + 1,
         issuanceId: seed.issuanceId, outputSha256: SCREEN_OUTPUT_SHA256,
@@ -374,8 +376,8 @@ describe("trace case handlers", () => {
         webSessionId: seed.webSessionId,
       },
     ]);
-    expect(JSON.stringify(input.candidates)).not.toContain("screen-recipient@fixture.invalid");
-    expect(input.candidates.every((candidate) => !Object.hasOwn(candidate, "email"))).toBe(true);
+    expect(JSON.stringify(candidates)).not.toContain("screen-recipient@fixture.invalid");
+    expect(candidates.every((candidate) => !Object.hasOwn(candidate, "email"))).toBe(true);
 
     await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
       caseId, traceJob!._id, SCREEN_ISSUANCE_TRACE_HANDLE, { issuanceId: seed.issuanceId }, 1, "insufficient",
@@ -418,8 +420,9 @@ describe("trace case handlers", () => {
     const input = await t.mutation(api.jobs.getWorkerInput, {
       workerToken: WORKER_TOKEN, workerId: "screen-document-binding-worker", jobId: traceJob!._id,
     });
-    expect(input.candidates).toEqual(traceJob?.traceCandidateSnapshot);
-    expect(input.candidates.some((candidate) => candidate.webSessionId === seed.webSessionId)).toBe(false);
+    const candidates = input.candidates ?? [];
+    expect(candidates).toEqual(traceJob?.traceCandidateSnapshot);
+    expect(candidates.some((candidate) => candidate.webSessionId === seed.webSessionId)).toBe(false);
   });
 
   it("withholds a clear screen pattern attribution until immutable content matching exists", async () => {
