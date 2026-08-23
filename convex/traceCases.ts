@@ -13,6 +13,7 @@ import {
   MAX_TRACE_CANDIDATES,
   type TraceCandidateSnapshotBinding,
 } from "./traceCandidateSnapshotRules";
+import { assertCandidateRank, assertCandidateRankForCarrier } from "./traceRankRules";
 
 const decision = v.union(v.literal("attributed"), v.literal("insufficient"), v.literal("no_match"));
 
@@ -131,7 +132,7 @@ export const recordCandidate = mutation({
       args.watermarkScore, args.watermarkMargin, args.fingerprintScore, args.geometricScore,
       args.structureScore, args.timelineScore, args.finalConfidence,
     ]);
-    if (!Number.isInteger(args.rank) || args.rank < 1) throw new Error("INVALID_RANK");
+    assertCandidateRank(args.rank);
     if ((args.issuanceId ? 1 : 0) + (args.webSessionId ? 1 : 0) !== 1) throw new Error("CANDIDATE_PROVENANCE_REQUIRED");
     if (!traceJob.traceCandidateSnapshot) throw new Error("TRACE_CANDIDATE_SNAPSHOT_MISSING");
     assertCandidateInTraceSnapshot(traceJob.traceCandidateSnapshot, {
@@ -151,6 +152,11 @@ export const recordCandidate = mutation({
     if (!profile || profile.status !== "active" || profile.profileVersion !== args.profileVersion || profile.protocolVersion !== args.protocolVersion) {
       throw new Error("CANDIDATE_PROFILE_MISMATCH");
     }
+    assertCandidateRankForCarrier(args.rank, profile.carrier, args.requestedDecision);
+    const existingAtRank = await ctx.db.query("traceCandidates")
+      .withIndex("by_case_rank", (q: any) => q.eq("caseId", args.caseId).eq("rank", args.rank))
+      .first();
+    if (existingAtRank) throw new Error("DUPLICATE_CANDIDATE_RANK");
     const thresholds = parseTraceThresholds(profile.thresholds);
     const decisionValue = resolveTraceDecision(args.requestedDecision, args.finalConfidence, args.watermarkMargin, thresholds);
     const candidateId = await ctx.db.insert("traceCandidates", {

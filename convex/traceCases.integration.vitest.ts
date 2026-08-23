@@ -132,6 +132,9 @@ describe("trace case handlers", () => {
       caseId, traceJob!._id, seed.candidateIssuanceId, SNAPSHOTTED_TRACE_HANDLE,
     ))).resolves.toMatchObject({ decision: "attributed" });
     await expect(t.mutation(api.traceCases.recordCandidate, candidateArgs(
+      caseId, traceJob!._id, seed.candidateIssuanceId, SNAPSHOTTED_TRACE_HANDLE,
+    ))).rejects.toThrow("DUPLICATE_CANDIDATE_RANK");
+    await expect(t.mutation(api.traceCases.recordCandidate, candidateArgs(
       caseId, traceJob!._id, outOfSnapshotIssuanceId, OUT_OF_SNAPSHOT_TRACE_HANDLE,
     ))).rejects.toThrow("TRACE_CANDIDATE_SNAPSHOT_MISMATCH");
   });
