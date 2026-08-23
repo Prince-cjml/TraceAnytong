@@ -20,10 +20,10 @@ In a second terminal:
 
 ```text
 cd services/watermark-worker
-python -m pip install -e ".[dev]"
-python -m uvicorn app.main:app --reload
+python3 -m pip install -e ".[dev]"
+traceanytong-worker run
 ```
 
-Configure `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_URL`, and `WORKER_TOKEN` from `.env.example` before connecting a Convex deployment. Run `npm run test`, `python -m pytest services/watermark-worker/tests -q`, and `python -m pytest bench/tests -q` before release.
+Copy `services/watermark-worker/.env.example` to the worker environment and configure its worker-only token, worker ID, and immutable profile secrets. `traceanytong-worker run` is the lease-processing daemon; Uvicorn serves only the health/explicit-trigger API and does not process queued jobs. Configure `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_URL`, and `WORKER_TOKEN` from `.env.example` before connecting a Convex deployment. Run `npm run test`, `python3 -m pytest services/watermark-worker/tests -q`, and `python3 -m pytest bench/tests -q` before release.
 
 See [the runbook](docs/RUNBOOK.md) and [demo guide](docs/DEMO.md).
