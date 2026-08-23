@@ -277,7 +277,152 @@ class JobRunner:
             raise InputIntegrityError("trace job candidates are invalid")
         carrier_kind = payload.get("profileCarrier")
         matches: list[dict] = []
-        if carrier_kind == "screen":
+        if carrier_kind == "screen" and mime == "application/pdf":
+            # A new or expired screen profile can legitimately have an empty
+            # immutable candidate snapshot.  That is an explainable completed
+            # trace with no candidates, not an infrastructure failure.
+            detector_version = ScreenTileCarrier.detector_version
+            try:
+                rendered_pages = self.registry.for_mime(mime).render_reference(
+                    Artifact(evidence_bytes, mime, self._filename(mime, job))
+                )
+                screenshots = [
+                    (page_number, Image.open(io.BytesIO(page.data)).convert("RGB"))
+                    for page_number, page in enumerate(rendered_pages, start=1)
+                ]
+            except (OSError, WorkerError) as exc:
+                raise InputIntegrityError("screen trace PDF evidence cannot be rendered") from exc
+            scored: list[tuple[dict, CarrierEvidence, list[tuple[int, CarrierEvidence]]]] = []
+            for candidate in candidates:
+                try:
+                    identity = TraceIdentity(
+                        trace_handle=candidate["traceHandle"], scope=candidate["scope"],
+                        profile_version=profile.profile_version, created_at=int(candidate["createdAt"]),
+                    )
+                    identity.validate()
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise InputIntegrityError("screen trace candidate identity is invalid") from exc
+                self._screen_candidate_provenance(candidate)
+                page_evidence = [
+                    (page_number, ScreenTileCarrier().detect_candidate(screenshot, identity, profile))
+                    for page_number, screenshot in screenshots
+                ]
+                # A PDF can have differently cropped, compressed, or obscured pages.
+                # Select its strongest page deterministically, retaining every page's
+                # raw correlation evidence for the ranked candidates below.
+                if not page_evidence:
+                    continue
+                _, best_evidence = max(
+                    page_evidence,
+                    key=lambda item: (item[1].score, -item[0]),
+                )
+                scored.append((candidate, best_evidence, page_evidence))
+            # A trace case retains the strongest two candidate bindings.  Keep
+            # ties deterministic even if the control-plane candidate order
+            # changes, and preserve the full scored vector as raw evidence.
+            scored.sort(key=lambda item: (-item[1].score, item[0]["traceHandle"]))
+            ranked_scores = [
+                {
+                    "rank": rank,
+                    "traceHandle": candidate["traceHandle"],
+                    "scope": candidate["scope"],
+                    **self._screen_candidate_provenance(candidate),
+                    "score": evidence.score,
+                    "raw": evidence.raw,
+                    "warnings": list(evidence.warnings),
+                    "detectorVersion": evidence.detector_version,
+                }
+                for rank, (candidate, evidence, _) in enumerate(scored, start=1)
+            ]
+            retained = scored[:2]
+            matches = [candidate for candidate, _, _ in retained]
+            top_score = scored[0][1].score if scored else 0.0
+            runner_up_score = scored[1][1].score if len(scored) > 1 else 0.0
+            top_candidate_margin = max(0.0, top_score - runner_up_score)
+            for rank, (candidate, evidence, page_evidence) in enumerate(retained, start=1):
+                is_top_candidate = rank == 1
+                phase_margin = float(evidence.raw["margin"])
+                is_clear = (
+                    is_top_candidate
+                    and evidence.score >= 0.9
+                    and top_candidate_margin >= 0.05
+                    and phase_margin >= 0.01
+                )
+                raw_evidence = {
+                    "screenCorrelation": asdict(evidence),
+                    "pageCorrelations": [
+                        {"page": page_number, "screenCorrelation": asdict(page_evidence)}
+                        for page_number, page_evidence in page_evidence
+                    ],
+                    "candidateRank": rank,
+                    "candidateScores": ranked_scores,
+                    "evidenceSha256": actual_sha,
+                }
+                if is_top_candidate:
+                    raw_evidence["topScreenCorrelation"] = asdict(evidence)
+                provenance = self._screen_candidate_provenance(candidate)
+                self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
+                    "caseId": case_id, "traceHandle": candidate["traceHandle"], **provenance,
+                    "watermarkScore": evidence.score, "watermarkMargin": top_candidate_margin if is_top_candidate else 0.0, "fingerprintScore": 0.0,
+                    "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
+                    "finalConfidence": evidence.score if is_clear else 0.0,
+                    "requestedDecision": "attributed" if is_clear else "insufficient",
+                    "explanation": "Candidate-matched screen pattern has a clear PDF page correlation peak and separation." if is_clear else ("Runner-up PDF screen candidate is retained for explainability and is never eligible for attribution." if not is_top_candidate else "PDF page screen-pattern correlation is ambiguous or insufficiently separated from other candidates."),
+                    "rawEvidence": raw_evidence,
+                    "rank": rank, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
+                    "carrierVersion": profile.carrier_version, "detectorVersion": evidence.detector_version,
+                    "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
+                    "workerVersion": self.settings.worker_version,
+                })
+        elif carrier_kind == "screen" and mime in {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        }:
+            # The native Office adapters deliberately do not claim to render a
+            # visual page. Preserve their native provenance support instead of
+            # manufacturing a visual correlation score from package bytes.
+            identities: list[TraceIdentity] = []
+            candidate_by_identity: dict[tuple[str, str], dict] = {}
+            for candidate in candidates:
+                try:
+                    identity = TraceIdentity(
+                        trace_handle=candidate["traceHandle"], scope=candidate["scope"],
+                        profile_version=profile.profile_version, created_at=int(candidate["createdAt"]),
+                    )
+                    identity.validate()
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise InputIntegrityError("screen trace candidate identity is invalid") from exc
+                self._screen_candidate_provenance(candidate)
+                identities.append(identity)
+                candidate_by_identity[(identity.trace_handle, identity.scope)] = candidate
+            evidence = NativeStructureCarrier().detect(Artifact(evidence_bytes, mime), profile, candidates=identities)
+            detector_version = evidence.detector_version
+            structure_matches = sorted(
+                (match for match in evidence.raw["candidateMatches"] if match["profileVersionMatches"]),
+                key=lambda match: (match["traceHandle"], match["scope"]),
+            )[:2]
+            for rank, match in enumerate(structure_matches, start=1):
+                candidate = candidate_by_identity[(match["traceHandle"], match["scope"])]
+                provenance = self._screen_candidate_provenance(candidate)
+                self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
+                    "caseId": case_id, "traceHandle": match["traceHandle"], **provenance,
+                    "watermarkScore": 0.0, "watermarkMargin": 0.0,
+                    "fingerprintScore": 1.0 if candidate.get("outputSha256") == actual_sha else 0.0,
+                    "geometricScore": 0.0, "structureScore": evidence.score, "timelineScore": 1.0,
+                    "finalConfidence": 0.0, "requestedDecision": "insufficient",
+                    "explanation": "Native document provenance matched an anonymous candidate, but Office visual rendering is unavailable and structure evidence is never sufficient for attribution.",
+                    "rawEvidence": {
+                        "nativeStructure": asdict(evidence),
+                        "screenVisualCorrelation": {"attempted": False, "reason": "office_rendering_unavailable"},
+                        "evidenceSha256": actual_sha,
+                    },
+                    "rank": rank, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
+                    "carrierVersion": NativeStructureCarrier.carrier_version, "detectorVersion": evidence.detector_version,
+                    "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
+                    "workerVersion": self.settings.worker_version,
+                })
+            matches = structure_matches
+        elif carrier_kind == "screen":
             # A new or expired screen profile can legitimately have an empty
             # immutable candidate snapshot.  That is an explainable completed
             # trace with no candidates, not an infrastructure failure.

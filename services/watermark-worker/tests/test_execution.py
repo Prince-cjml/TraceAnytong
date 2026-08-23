@@ -2,14 +2,17 @@ import base64
 import hashlib
 import io
 
+import fitz
 import pytest
 from PIL import Image, PngImagePlugin
 from docx import Document
+from pptx import Presentation
 
 from app.control_plane import ClaimedJob
 from app.errors import InputDownloadError, LeaseLostError
 from app.execution import JobRunner, WorkerSettings
 from app.carriers.screen_tile import ScreenTileCarrier
+from app.carriers.structure import NativeStructureCarrier
 from app.formats.registry import AdapterRegistry
 from app.models import Artifact, CarrierEvidence, CarrierProfile, TraceIdentity
 
@@ -56,6 +59,42 @@ def screen_capture(trace_handle: str, profile_version: str, scope: str = "web_se
     out = io.BytesIO()
     capture.convert("RGB").save(out, "PNG")
     return out.getvalue()
+
+
+def screen_pdf(trace_handle: str, profile_version: str) -> bytes:
+    """Create a deterministic PDF issued with the normal screen adapter."""
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Screen-profile PDF trace fixture")
+    source = document.tobytes()
+    document.close()
+    profile = CarrierProfile("screen-v1", profile_version, "key-1", b"deterministic-screen-key", tile_size=64)
+    identity = TraceIdentity(trace_handle, "issuance", profile_version, 1_725_000_000)
+    return AdapterRegistry().for_mime("application/pdf").personalize(
+        Artifact(source, "application/pdf", "fixture.pdf"), identity, profile
+    ).artifact.data
+
+
+def screen_native_document(mime: str, trace_handle: str, profile_version: str) -> bytes:
+    """Create a native Office artifact without claiming an Office render path."""
+    source = io.BytesIO()
+    if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        document = Document()
+        document.add_paragraph("Screen-profile DOCX trace fixture")
+        document.save(source)
+        filename = "fixture.docx"
+    elif mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+        presentation = Presentation()
+        presentation.slides.add_slide(presentation.slide_layouts[6])
+        presentation.save(source)
+        filename = "fixture.pptx"
+    else:
+        raise AssertionError(f"unexpected native Office MIME: {mime}")
+    profile = CarrierProfile("screen-v1", profile_version, "key-1", b"deterministic-screen-key", tile_size=64)
+    identity = TraceIdentity(trace_handle, "issuance", profile_version, 1_725_000_000)
+    return AdapterRegistry().for_mime(mime).personalize(
+        Artifact(source.getvalue(), mime, filename), identity, profile
+    ).artifact.data
 
 
 def environment() -> dict[str, str]:
@@ -432,6 +471,141 @@ def test_trace_job_records_issuance_scoped_screen_candidate() -> None:
     assert "webSessionId" not in client.trace_candidates[0]
     assert client.trace_candidates[0]["rawEvidence"]["candidateScores"][0]["scope"] == "issuance"
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+
+
+def test_trace_job_renders_pdf_screen_evidence_with_page_correlations() -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    source = screen_pdf(trace_handle, "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-pdf-screen", "trace-pdf-screen-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:pdf-screen")
+    original_input = client.input
+
+    def pdf_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:pdf-screen", "mime": "application/pdf", "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [{"issuanceId": "issuances:pdf", "traceHandle": trace_handle, "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": hashlib.sha256(source).hexdigest()}],
+        })
+        return payload
+
+    client.input = pdf_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["issuanceId"] == "issuances:pdf"
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert client.trace_candidates[0]["rawEvidence"]["pageCorrelations"]
+    page = client.trace_candidates[0]["rawEvidence"]["pageCorrelations"][0]
+    assert page["page"] == 1
+    assert page["screenCorrelation"]["detector_version"] == ScreenTileCarrier.detector_version
+    assert client.trace_candidates[0]["rawEvidence"]["screenCorrelation"]["score"] == client.trace_candidates[0]["watermarkScore"]
+
+
+def test_trace_job_with_pdf_and_empty_snapshot_completes_without_a_match() -> None:
+    source = screen_pdf("0123456789abcdef0123456789abcdef", "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-pdf-empty", "trace-pdf-empty-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:pdf-empty")
+    original_input = client.input
+
+    def pdf_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:pdf-empty", "mime": "application/pdf", "profileId": "screen-v1", "profileCarrier": "screen", "candidates": [],
+        })
+        return payload
+
+    client.input = pdf_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates == []
+    assert client.completed_cases == ["cases:pdf-empty"]
+    assert client.completed is not None
+    assert client.completed["result"]["candidateCount"] == 0
+
+
+@pytest.mark.parametrize("mime", [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+])
+def test_trace_job_uses_structure_only_for_native_office_screen_evidence(mime: str) -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    source = screen_native_document(mime, trace_handle, "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-native-screen", "trace-native-screen-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:native-screen")
+    original_input = client.input
+
+    def native_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:native-screen", "mime": mime, "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [{"issuanceId": "issuances:native", "traceHandle": trace_handle, "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": hashlib.sha256(source).hexdigest()}],
+        })
+        return payload
+
+    client.input = native_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert client.trace_candidates[0]["rank"] == 1
+    assert client.trace_candidates[0]["watermarkScore"] == 0.0
+    assert client.trace_candidates[0]["rawEvidence"]["nativeStructure"]["raw"]["candidateMatches"][0]["traceHandle"] == trace_handle
+    assert client.trace_candidates[0]["rawEvidence"]["screenVisualCorrelation"] == {"attempted": False, "reason": "office_rendering_unavailable"}
+    assert "screenCorrelation" not in client.trace_candidates[0]["rawEvidence"]
+
+
+@pytest.mark.parametrize("mime", [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+])
+def test_trace_job_with_unmatched_native_office_evidence_completes_without_candidates(mime: str) -> None:
+    source = screen_native_document(mime, "0123456789abcdef0123456789abcdef", "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-native-empty", "trace-native-empty-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:native-empty")
+    original_input = client.input
+
+    def native_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:native-empty", "mime": mime, "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [{"issuanceId": "issuances:other", "traceHandle": "fedcba9876543210fedcba9876543210", "scope": "issuance", "createdAt": 1_725_000_001, "wmCode": None, "outputSha256": None}],
+        })
+        return payload
+
+    client.input = native_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates == []
+    assert client.completed_cases == ["cases:native-empty"]
+    assert client.completed is not None
+    assert client.completed["result"]["candidateCount"] == 0
+    assert client.completed["result"]["detectorVersion"] == NativeStructureCarrier.detector_version
 
 
 def test_trace_job_with_empty_screen_snapshot_completes_without_candidates() -> None:
