@@ -398,6 +398,7 @@ def test_trace_job_never_requests_attribution_from_metadata_only_recovery() -> N
     assert outcome.status == "succeeded"
     assert client.trace_candidates[0]["fingerprintScore"] == 0.0
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert client.trace_candidates[0]["finalConfidence"] == 0.0
 
 
 def test_trace_job_fuses_visual_code_with_frozen_perceptual_fingerprint_after_transform() -> None:
@@ -594,6 +595,13 @@ def test_trace_job_renders_pdf_screen_evidence_with_page_correlations() -> None:
     assert page["page"] == 1
     assert page["screenCorrelation"]["detector_version"] == ScreenTileCarrier.detector_version
     assert client.trace_candidates[0]["rawEvidence"]["screenCorrelation"]["score"] == client.trace_candidates[0]["watermarkScore"]
+    assert client.trace_candidates[0]["finalConfidence"] == 0.0
+    assert client.trace_candidates[0]["rawEvidence"]["attributionGate"] == {
+        "contentMatchAvailable": False,
+        "contentMatchStatus": "unavailable",
+        "correlationClear": False,
+        "warning": JobRunner._SCREEN_CONTENT_MATCH_WARNING,
+    }
 
 
 def test_trace_job_with_pdf_and_empty_snapshot_completes_without_a_match() -> None:
@@ -712,6 +720,9 @@ def test_trace_job_uses_optional_office_rendered_pages_for_screen_correlation(mo
     assert renderer["status"] == "rendered"
     assert renderer["externalVersion"] == "LibreOffice 24.2.5"
     assert renderer["outputPages"] >= 1
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert client.trace_candidates[0]["finalConfidence"] == 0.0
+    assert client.trace_candidates[0]["rawEvidence"]["attributionGate"]["contentMatchStatus"] == "unavailable"
 
 
 @pytest.mark.parametrize("mime", [
@@ -827,7 +838,7 @@ def test_trace_job_retains_the_top_two_ranked_screen_candidates_with_raw_evidenc
     assert client.trace_candidates[1]["requestedDecision"] == "insufficient"
 
 
-def test_trace_job_only_allows_a_clear_top_screen_candidate_to_request_attribution(monkeypatch) -> None:
+def test_trace_job_keeps_a_clear_top_screen_candidate_insufficient_without_content_matching(monkeypatch) -> None:
     top_handle = "0123456789abcdef0123456789abcdef"
     runner_up_handle = "fedcba9876543210fedcba9876543210"
     source = png_bytes()
@@ -866,8 +877,15 @@ def test_trace_job_only_allows_a_clear_top_screen_candidate_to_request_attributi
 
     assert outcome.status == "succeeded"
     assert [candidate["rank"] for candidate in client.trace_candidates] == [1, 2]
-    assert [candidate["requestedDecision"] for candidate in client.trace_candidates] == ["attributed", "insufficient"]
-    assert client.trace_candidates[0]["finalConfidence"] == 0.96
+    assert [candidate["requestedDecision"] for candidate in client.trace_candidates] == ["insufficient", "insufficient"]
+    assert client.trace_candidates[0]["finalConfidence"] == 0.0
     assert client.trace_candidates[1]["finalConfidence"] == 0.0
     assert client.trace_candidates[0]["watermarkMargin"] == pytest.approx(0.66)
+    assert client.trace_candidates[0]["rawEvidence"]["attributionGate"] == {
+        "contentMatchAvailable": False,
+        "contentMatchStatus": "unavailable",
+        "correlationClear": True,
+        "warning": JobRunner._SCREEN_CONTENT_MATCH_WARNING,
+    }
+    assert "immutable content matching" in client.trace_candidates[0]["explanation"]
     assert client.trace_candidates[1]["explanation"].startswith("Runner-up screen candidate")

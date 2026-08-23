@@ -136,6 +136,10 @@ class JobRunner:
     # may ask the control plane (which independently applies profile policy)
     # for attribution.
     _MIN_IMAGE_PERCEPTUAL_SCORE = 0.90
+    _SCREEN_CONTENT_MATCH_WARNING = (
+        "Immutable content matching is unavailable for screen traces; "
+        "watermark correlation cannot request attribution."
+    )
 
     def __init__(self, settings: WorkerSettings, client: WorkerClient, registry: AdapterRegistry | None = None, env: Mapping[str, str] | None = None) -> None:
         self.settings = settings
@@ -218,6 +222,23 @@ class JobRunner:
         if scope == "web_session" and isinstance(candidate.get("webSessionId"), str):
             return {"webSessionId": candidate["webSessionId"]}
         raise InputIntegrityError("screen trace candidate is missing scope-matched provenance")
+
+    @classmethod
+    def _screen_content_match_gate(cls, *, correlation_clear: bool) -> dict[str, object]:
+        """Describe why a screen correlation is evidence, not attribution.
+
+        Screen tiles establish a candidate-relative visual signal, but this
+        worker currently has no immutable source-content comparison for PDF,
+        Office-rendered, or raster screen evidence.  Keeping this decision in
+        one fail-closed gate prevents any rendering path from accidentally
+        turning a strong correlation into an attribution request.
+        """
+        return {
+            "contentMatchAvailable": False,
+            "contentMatchStatus": "unavailable",
+            "correlationClear": correlation_clear,
+            "warning": cls._SCREEN_CONTENT_MATCH_WARNING,
+        }
 
     def _result(self, personalized: PersonalizationResult, profile: CarrierProfile, artifact: Artifact) -> dict:
         # Deliberately select safe, explainable fields. CarrierProfile.secret is never serialized.
@@ -355,6 +376,7 @@ class JobRunner:
                 "candidateRank": rank,
                 "candidateScores": ranked_scores,
                 "evidenceSha256": evidence_sha256,
+                "attributionGate": self._screen_content_match_gate(correlation_clear=is_clear),
             }
             if extra_raw_evidence:
                 raw_evidence.update(extra_raw_evidence)
@@ -365,9 +387,13 @@ class JobRunner:
                 "caseId": case_id, "traceHandle": candidate["traceHandle"], **provenance,
                 "watermarkScore": evidence.score, "watermarkMargin": top_candidate_margin if is_top_candidate else 0.0, "fingerprintScore": 0.0,
                 "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
-                "finalConfidence": evidence.score if is_clear else 0.0,
-                "requestedDecision": "attributed" if is_clear else "insufficient",
-                "explanation": f"Candidate-matched screen pattern has a clear {source_description} page correlation peak and separation." if is_clear else (f"Runner-up {source_description} screen candidate is retained for explainability and is never eligible for attribution." if not is_top_candidate else f"{source_description} page screen-pattern correlation is ambiguous or insufficiently separated from other candidates."),
+                "finalConfidence": 0.0,
+                "requestedDecision": "insufficient",
+                "explanation": (
+                    f"{source_description} screen-pattern correlation is retained as raw evidence, but attribution is unavailable because immutable content matching is not implemented for screen traces."
+                    if is_top_candidate
+                    else f"Runner-up {source_description} screen candidate is retained for explainability; immutable content matching is unavailable, so it is never eligible for attribution."
+                ),
                 "rawEvidence": raw_evidence,
                 "rank": rank, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
                 "carrierVersion": profile.carrier_version, "detectorVersion": evidence.detector_version,
@@ -536,6 +562,7 @@ class JobRunner:
                     "candidateRank": rank,
                     "candidateScores": ranked_scores,
                     "evidenceSha256": actual_sha,
+                    "attributionGate": self._screen_content_match_gate(correlation_clear=is_clear),
                 }
                 # Retain the original top-level key for existing evidence
                 # consumers while giving every retained rank its own evidence.
@@ -546,9 +573,13 @@ class JobRunner:
                     "caseId": case_id, "traceHandle": candidate["traceHandle"], **provenance,
                     "watermarkScore": evidence.score, "watermarkMargin": top_candidate_margin if is_top_candidate else 0.0, "fingerprintScore": 0.0,
                     "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
-                    "finalConfidence": evidence.score if is_clear else 0.0,
-                    "requestedDecision": "attributed" if is_clear else "insufficient",
-                    "explanation": "Candidate-matched screen pattern has a clear correlation peak and separation." if is_clear else ("Runner-up screen candidate is retained for explainability and is never eligible for attribution." if not is_top_candidate else "Screen pattern correlation is ambiguous or insufficiently separated from other session candidates."),
+                    "finalConfidence": 0.0,
+                    "requestedDecision": "insufficient",
+                    "explanation": (
+                        "Screen-pattern correlation is retained as raw evidence, but attribution is unavailable because immutable content matching is not implemented for screen traces."
+                        if is_top_candidate
+                        else "Runner-up screen candidate is retained for explainability; immutable content matching is unavailable, so it is never eligible for attribution."
+                    ),
                     "rawEvidence": raw_evidence,
                     "rank": rank, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
                     "carrierVersion": profile.carrier_version, "detectorVersion": evidence.detector_version,
