@@ -24,6 +24,11 @@ SOURCE_CONTENT_INDEX_VERSION = "source-content-index-v1"
 PAGE_FINGERPRINT_VERSION = "perceptual-page-v1"
 IMAGE_DECODER_VERSION = f"Pillow-{PILLOW_VERSION}"
 PDF_RENDER_SCALE = 2.0  # Fixed 144-DPI render scale; do not make this ambient.
+# This is deliberately duplicated at the worker boundary rather than trusted
+# from an unbounded leased payload. Keep it aligned with the control-plane
+# maximum. A source that exceeds it is explicitly unindexed, never partially
+# indexed, so a later trace cannot mistake an incomplete index for a full one.
+MAX_SOURCE_INDEX_PAGES = 200
 
 IndexStatus = Literal["indexed", "unindexed"]
 
@@ -130,12 +135,14 @@ def _canonical_png(image: Image.Image) -> bytes:
     return output.getvalue()
 
 
-def canonical_page_previews(artifact: Artifact) -> tuple[bytes, ...]:
+def canonical_page_previews(artifact: Artifact, *, max_pages: int = MAX_SOURCE_INDEX_PAGES) -> tuple[bytes, ...]:
     """Produce worker-uploadable canonical page previews for a successful index.
 
     This is deliberately separate from ``to_dict``: preview bytes never enter
     an index manifest or a worker-visible candidate binding.
     """
+    if not 1 <= max_pages <= MAX_SOURCE_INDEX_PAGES:
+        raise ValueError(f"max_pages must be between 1 and {MAX_SOURCE_INDEX_PAGES}")
     mime_type = _normalized_mime(artifact.mime_type)
     if mime_type in {"image/jpeg", "image/png", "image/webp"}:
         try:
@@ -149,7 +156,7 @@ def canonical_page_previews(artifact: Artifact) -> tuple[bytes, ...]:
     document: fitz.Document | None = None
     try:
         document = fitz.open(stream=artifact.data, filetype="pdf")
-        if document.needs_pass:
+        if document.needs_pass or document.page_count > max_pages:
             return ()
         previews: list[bytes] = []
         for page in document:
@@ -212,7 +219,7 @@ def _index_image(artifact: Artifact, mime_type: str, evidence: dict[str, object]
     return SourceContentIndex("indexed", hashlib.sha256(artifact.data).hexdigest(), mime_type, (record,), (), evidence)
 
 
-def _index_pdf(artifact: Artifact, mime_type: str, evidence: dict[str, object]) -> SourceContentIndex:
+def _index_pdf(artifact: Artifact, mime_type: str, evidence: dict[str, object], *, max_pages: int) -> SourceContentIndex:
     evidence["renderer"] = {
         "name": "PyMuPDF",
         "version": str(fitz.VersionBind),
@@ -228,6 +235,14 @@ def _index_pdf(artifact: Artifact, mime_type: str, evidence: dict[str, object]) 
                 mime_type,
                 reason="encrypted-pdf",
                 warning="Encrypted PDF was not indexed.",
+                evidence=evidence,
+            )
+        if document.page_count > max_pages:
+            return _unindexed(
+                artifact,
+                mime_type,
+                reason="page-limit-exceeded",
+                warning=f"PDF exceeds the configured {max_pages}-page source-index limit and was not indexed.",
                 evidence=evidence,
             )
         records: list[PageFingerprint] = []
@@ -260,19 +275,21 @@ def _index_pdf(artifact: Artifact, mime_type: str, evidence: dict[str, object]) 
             document.close()
 
 
-def index_source_content(artifact: Artifact) -> SourceContentIndex:
+def index_source_content(artifact: Artifact, *, max_pages: int = MAX_SOURCE_INDEX_PAGES) -> SourceContentIndex:
     """Index an image or PDF into deterministic page fingerprints.
 
     DOCX/PPTX intentionally remain unindexed until a pinned office renderer is
     made part of this component's declared toolchain.  This is fail-closed: no
     source bytes, extracted text, guessed pages, or implicit conversion are used.
     """
+    if not 1 <= max_pages <= MAX_SOURCE_INDEX_PAGES:
+        raise ValueError(f"max_pages must be between 1 and {MAX_SOURCE_INDEX_PAGES}")
     mime_type = _normalized_mime(artifact.mime_type)
     evidence = _base_evidence(artifact, mime_type)
     if mime_type in {"image/jpeg", "image/png", "image/webp"}:
         return _index_image(artifact, mime_type, evidence)
     if mime_type == "application/pdf":
-        return _index_pdf(artifact, mime_type, evidence)
+        return _index_pdf(artifact, mime_type, evidence, max_pages=max_pages)
     if mime_type in {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",

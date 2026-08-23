@@ -79,6 +79,21 @@ def test_canonical_page_previews_follow_indexed_page_order_without_filename_meta
     assert b"private-person.pdf" not in b"".join(previews)
 
 
+def test_pdf_over_the_declared_page_limit_is_unindexed_without_partial_previews() -> None:
+    document = fitz.open()
+    for _ in range(2):
+        document.new_page(width=72, height=72)
+    artifact = Artifact(document.tobytes(), "application/pdf", "too-many-pages.pdf")
+    document.close()
+
+    result = index_source_content(artifact, max_pages=1)
+
+    assert result.status == "unindexed"
+    assert result.pages == ()
+    assert result.raw_evidence["result"] == {"reason": "page-limit-exceeded", "pageCount": 0}
+    assert canonical_page_previews(artifact, max_pages=1) == ()
+
+
 @pytest.mark.parametrize(
     ("artifact", "reason"),
     [

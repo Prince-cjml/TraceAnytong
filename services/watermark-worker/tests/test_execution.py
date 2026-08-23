@@ -268,6 +268,38 @@ def test_content_index_runs_without_a_profile_secret_and_uploads_manifest_previe
     assert client.calls.count("upload:application/json") == 2
 
 
+def test_content_index_respects_the_leased_page_limit_before_uploading_pages() -> None:
+    document = fitz.open()
+    for _ in range(2):
+        document.new_page(width=72, height=72)
+    source = document.tobytes()
+    document.close()
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:index-limit", "index-limit-key", "content_index", "storage:source", "source-content-index-v1", 9_999_999)
+
+    def index_input(worker_id: str, job_id: str) -> dict:
+        client.calls.append("input")
+        return {
+            "inputUrl": "https://storage.example/input", "mime": "application/pdf", "inputSha256": hashlib.sha256(client.source).hexdigest(),
+            "versionId": "documentVersions:immutable", "indexVersion": "source-content-index-v1", "maxPages": 1,
+        }
+
+    client.input = index_input  # type: ignore[method-assign]
+
+    def index_upload(upload_url: str, data: bytes, mime_type: str) -> str:
+        client.calls.append(f"upload:{mime_type}")
+        return f"storage:{len(client.calls)}"
+
+    client.upload_output = index_upload  # type: ignore[method-assign]
+    outcome = runner_for(client, {key: value for key, value in environment().items() if "PROFILE_" not in key}).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.completed_indexes[0]["status"] == "unindexed"
+    assert client.completed_indexes[0]["pages"] == []
+    assert client.calls.count("upload:image/png") == 0
+    assert client.calls.count("upload:application/json") == 1
+
+
 def test_maintenance_uses_server_controlled_lease_recovery_before_retry_requeue() -> None:
     client = FakeClient(png_bytes())
     client.recovered = 2

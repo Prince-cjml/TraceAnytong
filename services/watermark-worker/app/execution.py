@@ -143,6 +143,7 @@ class JobRunner:
         "Immutable content matching is unavailable for screen traces; "
         "watermark correlation cannot request attribution."
     )
+    _MAX_CONTENT_INDEX_PAGES = 200
 
     def __init__(self, settings: WorkerSettings, client: WorkerClient, registry: AdapterRegistry | None = None, env: Mapping[str, str] | None = None) -> None:
         self.settings = settings
@@ -297,7 +298,18 @@ class JobRunner:
     def _complete_content_index(self, job: ClaimedJob, payload: dict) -> RunOutcome:
         """Index a source version without resolving a watermark profile or secret."""
         input_url, mime, version_id = payload.get("inputUrl"), payload.get("mime"), payload.get("versionId")
-        if not isinstance(input_url, str) or not isinstance(mime, str) or not isinstance(version_id, str) or payload.get("indexVersion") != SOURCE_CONTENT_INDEX_VERSION:
+        max_pages = payload.get("maxPages")
+        if isinstance(max_pages, float) and max_pages.is_integer():
+            max_pages = int(max_pages)
+        if (
+            not isinstance(input_url, str)
+            or not isinstance(mime, str)
+            or not isinstance(version_id, str)
+            or payload.get("indexVersion") != SOURCE_CONTENT_INDEX_VERSION
+            or isinstance(max_pages, bool)
+            or not isinstance(max_pages, int)
+            or not 1 <= max_pages <= self._MAX_CONTENT_INDEX_PAGES
+        ):
             raise InputIntegrityError("content index input is incomplete")
         self.client.heartbeat(self.settings.worker_id, job.job_id)
         source_bytes = self.client.download_input(input_url)
@@ -305,19 +317,24 @@ class JobRunner:
         if payload.get("inputSha256") != actual_sha:
             raise InputIntegrityError("content index source SHA-256 does not match immutable version")
         source = Artifact(source_bytes, mime, self._filename(mime, job))
-        index = index_source_content(source)
-        previews = canonical_page_previews(source)
+        index = index_source_content(source, max_pages=max_pages)
+        previews = canonical_page_previews(source, max_pages=max_pages)
         if index.status == "indexed" and len(previews) != len(index.pages):
             raise ProcessingError("canonical previews do not match indexed pages")
         pages: list[dict[str, object]] = []
         for page, preview in zip(index.pages, previews, strict=True):
             self.client.heartbeat(self.settings.worker_id, job.job_id)
-            preview_storage_id = self.client.upload_output(self.client.create_upload_url(), preview, "image/png")
+            preview_upload_url = self.client.create_upload_url()
+            self.client.heartbeat(self.settings.worker_id, job.job_id)
+            preview_storage_id = self.client.upload_output(preview_upload_url, preview, "image/png")
             feature = json.dumps({
                 "dHash": page.d_hash, "fingerprintVersion": page.fingerprint_version,
                 "pHash": page.p_hash, "sourcePageSha256": page.sha256,
             }, sort_keys=True, separators=(",", ":")).encode()
-            feature_storage_id = self.client.upload_output(self.client.create_upload_url(), feature, "application/json")
+            self.client.heartbeat(self.settings.worker_id, job.job_id)
+            feature_upload_url = self.client.create_upload_url()
+            self.client.heartbeat(self.settings.worker_id, job.job_id)
+            feature_storage_id = self.client.upload_output(feature_upload_url, feature, "application/json")
             pages.append({
                 "pageIndex": page.page_number - 1, "previewStorageId": preview_storage_id, "sourcePageSha256": page.sha256,
                 "pHash": page.p_hash, "dHash": page.d_hash, "fingerprintVersion": page.fingerprint_version,
@@ -325,7 +342,9 @@ class JobRunner:
             })
         manifest = json.dumps(index.to_dict(), sort_keys=True, separators=(",", ":")).encode()
         self.client.heartbeat(self.settings.worker_id, job.job_id)
-        manifest_storage_id = self.client.upload_output(self.client.create_upload_url(), manifest, "application/json")
+        manifest_upload_url = self.client.create_upload_url()
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        manifest_storage_id = self.client.upload_output(manifest_upload_url, manifest, "application/json")
         self.client.heartbeat(self.settings.worker_id, job.job_id)
         self.client.complete_content_index(self.settings.worker_id, job.job_id, {
             "versionId": version_id, "manifestStorageId": manifest_storage_id, "manifestSha256": hashlib.sha256(manifest).hexdigest(),
