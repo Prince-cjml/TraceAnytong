@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { traceCandidates } from "../lib/demo-data";
-import { canManageTraceCases, liveTraceConsoleState, traceResultCopy, workspaceInitials, workspaceSessionAction } from "./workspace";
+import { canManageTraceCases, liveTraceConsoleState, traceCandidateDisplay, traceResultCopy, workspaceInitials, workspaceSessionAction } from "./workspace";
 
 describe("trace result presentation", () => {
   it("keeps an insufficient decision explicitly non-attributive", () => {
@@ -34,6 +34,30 @@ describe("live trace access", () => {
     expect(canManageTraceCases("issuer")).toBe(false);
     expect(canManageTraceCases("viewer")).toBe(false);
     expect(canManageTraceCases(undefined)).toBe(false);
+  });
+});
+
+describe("live trace candidate privacy", () => {
+  it("does not render a supplied opaque trace handle while retaining the decision and safe evidence", () => {
+    const handle = "0123456789abcdef0123456789abcdef";
+    const evidence = { kind: "image" as const, facts: [{ label: "Image carrier score", value: "0.9400" }], warnings: [] };
+    const display = traceCandidateDisplay("live", {
+      ...traceCandidates[0],
+      traceHandle: handle,
+      evidence,
+    });
+
+    expect(display.label).toBe("Server-resolved candidate #1");
+    expect(display.detail).toBe("Anonymous candidate binding");
+    expect(JSON.stringify(display)).not.toContain(handle);
+    expect(display.decision).toBe(traceCandidates[0].decision);
+    expect(display.evidence).toEqual(evidence);
+  });
+
+  it("retains the anonymous fixture label and mock handle outside live mode", () => {
+    const display = traceCandidateDisplay("demo", traceCandidates[0]);
+    expect(display.label).toBe(traceCandidates[0].issuance);
+    expect(display.detail).toBe(traceCandidates[0].traceHandle);
   });
 });
 
