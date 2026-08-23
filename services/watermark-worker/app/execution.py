@@ -9,6 +9,7 @@ import base64
 import binascii
 import hashlib
 import io
+import json
 import os
 import re
 from dataclasses import asdict, dataclass
@@ -31,6 +32,7 @@ from .errors import (
 from .formats.registry import AdapterRegistry
 from .formats.office_renderer import OfficeRenderer
 from .fingerprint.perceptual import PerceptualFingerprinter
+from .fingerprint.content_index import SOURCE_CONTENT_INDEX_VERSION, canonical_page_previews, index_source_content
 from .models import Artifact, CarrierEvidence, CarrierProfile, FingerprintEvidence, PersonalizationResult, TraceIdentity
 
 
@@ -45,6 +47,7 @@ class WorkerClient(Protocol):
     def create_upload_url(self) -> str: ...
     def upload_output(self, upload_url: str, data: bytes, mime_type: str) -> str: ...
     def complete(self, worker_id: str, job_id: str, output_storage_id: str | None, output_sha256: str | None, result: dict) -> dict: ...
+    def complete_content_index(self, worker_id: str, job_id: str, result: dict) -> dict: ...
     def record_trace_candidate(self, worker_id: str, job_id: str, args: dict) -> dict: ...
     def complete_trace_case(self, worker_id: str, job_id: str, case_id: str, failed: bool = False) -> None: ...
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None: ...
@@ -289,6 +292,46 @@ class JobRunner:
         output_storage_id = self.client.upload_output(upload_url, data, "image/png")
         self.client.heartbeat(self.settings.worker_id, job.job_id)
         self.client.complete(self.settings.worker_id, job.job_id, output_storage_id, output_sha, self._web_tile_result(data, profile))
+        return RunOutcome("succeeded", job.job_id)
+
+    def _complete_content_index(self, job: ClaimedJob, payload: dict) -> RunOutcome:
+        """Index a source version without resolving a watermark profile or secret."""
+        input_url, mime, version_id = payload.get("inputUrl"), payload.get("mime"), payload.get("versionId")
+        if not isinstance(input_url, str) or not isinstance(mime, str) or not isinstance(version_id, str) or payload.get("indexVersion") != SOURCE_CONTENT_INDEX_VERSION:
+            raise InputIntegrityError("content index input is incomplete")
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        source_bytes = self.client.download_input(input_url)
+        actual_sha = hashlib.sha256(source_bytes).hexdigest()
+        if payload.get("inputSha256") != actual_sha:
+            raise InputIntegrityError("content index source SHA-256 does not match immutable version")
+        source = Artifact(source_bytes, mime, self._filename(mime, job))
+        index = index_source_content(source)
+        previews = canonical_page_previews(source)
+        if index.status == "indexed" and len(previews) != len(index.pages):
+            raise ProcessingError("canonical previews do not match indexed pages")
+        pages: list[dict[str, object]] = []
+        for page, preview in zip(index.pages, previews, strict=True):
+            self.client.heartbeat(self.settings.worker_id, job.job_id)
+            preview_storage_id = self.client.upload_output(self.client.create_upload_url(), preview, "image/png")
+            feature = json.dumps({
+                "dHash": page.d_hash, "fingerprintVersion": page.fingerprint_version,
+                "pHash": page.p_hash, "sourcePageSha256": page.sha256,
+            }, sort_keys=True, separators=(",", ":")).encode()
+            feature_storage_id = self.client.upload_output(self.client.create_upload_url(), feature, "application/json")
+            pages.append({
+                "pageIndex": page.page_number - 1, "previewStorageId": preview_storage_id, "sourcePageSha256": page.sha256,
+                "pHash": page.p_hash, "dHash": page.d_hash, "fingerprintVersion": page.fingerprint_version,
+                "featureStorageId": feature_storage_id, "featureSha256": hashlib.sha256(feature).hexdigest(), "width": page.width, "height": page.height,
+            })
+        manifest = json.dumps(index.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        manifest_storage_id = self.client.upload_output(self.client.create_upload_url(), manifest, "application/json")
+        self.client.heartbeat(self.settings.worker_id, job.job_id)
+        self.client.complete_content_index(self.settings.worker_id, job.job_id, {
+            "versionId": version_id, "manifestStorageId": manifest_storage_id, "manifestSha256": hashlib.sha256(manifest).hexdigest(),
+            "sourceSha256": actual_sha, "status": index.status, "indexVersion": index.index_version,
+            "rawEvidence": index.raw_evidence, "warnings": list(index.warnings), "pages": pages,
+        })
         return RunOutcome("succeeded", job.job_id)
 
     def _render_pdf_screenshots(self, artifact: Artifact) -> list[tuple[int, Image.Image]]:
@@ -719,10 +762,12 @@ class JobRunner:
         if job is None:
             return RunOutcome("idle")
         try:
-            if job.type not in {"personalize", "web_tile", "trace"}:
+            if job.type not in {"personalize", "web_tile", "trace", "content_index"}:
                 raise InputIntegrityError("worker does not support this job type", details={"type": job.type})
             self.client.start(self.settings.worker_id, job.job_id)
             payload = self.client.input(self.settings.worker_id, job.job_id)
+            if job.type == "content_index":
+                return self._complete_content_index(job, payload)
             if payload.get("profileId") != job.profile_id:
                 raise InputIntegrityError("leased job profile does not match claimed profile")
             profile_version = payload.get("profileVersion")

@@ -5,9 +5,20 @@ import { writeAuditEvent } from "./audit";
 import { LEASE_DURATION_MS, completionDisposition, leaseIsActive, retryAt } from "./jobRules";
 import { requireWorker } from "./workerAuth";
 import { workerCandidatesFromSnapshot } from "./traceCandidateSnapshotRules";
+import { assertContentIndexEvidence, assertContentIndexPages, CONTENT_INDEX_PROFILE_ID, CONTENT_INDEX_VERSION } from "./contentIndexRules";
 
 const workerClass = v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid"));
 const MAX_ATTEMPTS = 4;
+
+/** Stable equality for an exact retry; storage IDs are represented as strings at this boundary. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 export const enqueue = mutation({
   args: { jobKey: v.string(), type: v.string(), inputStorageId: v.id("_storage"), profileId: v.string(), workerClass, issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")) },
@@ -65,6 +76,17 @@ export const getWorkerInput = mutation({
     if (!job || (job.state !== "leased" && job.state !== "running") || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) {
       throw new Error("LEASE_NOT_ACTIVE");
     }
+    if (job.type === "content_index") {
+      const version = job.versionId ? await ctx.db.get(job.versionId) : null;
+      const inputUrl = job.inputStorageId ? await ctx.storage.getUrl(job.inputStorageId) : null;
+      if (!version || !inputUrl || job.profileId !== CONTENT_INDEX_PROFILE_ID || job.contentIndexVersion !== CONTENT_INDEX_VERSION || version.contentIndexVersion !== CONTENT_INDEX_VERSION) {
+        throw new Error("CONTENT_INDEX_INPUT_INVALID");
+      }
+      return {
+        inputUrl, mime: version.mime, inputSha256: version.sha256, versionId: job.versionId,
+        indexVersion: CONTENT_INDEX_VERSION, maxPages: 200, candidates: [],
+      };
+    }
     const [issuance, traceCase, webSession] = await Promise.all([
       job.issuanceId ? ctx.db.get(job.issuanceId) : null,
       job.caseId ? ctx.db.get(job.caseId) : null,
@@ -120,6 +142,7 @@ export const complete = mutation({
     requireWorker(args.workerToken);
     const job = await ctx.db.get(args.jobId);
     if (!job) throw new Error("NOT_FOUND");
+    if (job.type === "content_index") throw new Error("CONTENT_INDEX_REQUIRES_SPECIALIZED_COMPLETION");
     const disposition = completionDisposition(job.state, job.outputStorageId, args.outputStorageId);
     if (disposition === "idempotent") return { status: "already_succeeded" as const };
     if (disposition === "conflict") throw new Error("DUPLICATE_COMPLETION_CONFLICT");
@@ -138,6 +161,47 @@ export const complete = mutation({
   },
 });
 
+/** Atomically binds a deterministic source-page index to its immutable version. */
+export const completeContentIndex = mutation({
+  args: {
+    workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), versionId: v.id("documentVersions"),
+    manifestStorageId: v.id("_storage"), manifestSha256: v.string(), sourceSha256: v.string(),
+    status: v.union(v.literal("indexed"), v.literal("unindexed")), indexVersion: v.string(), rawEvidence: v.any(), warnings: v.array(v.string()),
+    pages: v.array(v.object({
+      pageIndex: v.number(), previewStorageId: v.id("_storage"), sourcePageSha256: v.string(), pHash: v.string(), dHash: v.string(),
+      fingerprintVersion: v.string(), featureStorageId: v.optional(v.id("_storage")), featureSha256: v.optional(v.string()), width: v.number(), height: v.number(),
+    })),
+  },
+  handler: async (ctx, args) => {
+    requireWorker(args.workerToken);
+    const job = await ctx.db.get(args.jobId);
+    if (!job || job.type !== "content_index" || job.versionId !== args.versionId || job.profileId !== CONTENT_INDEX_PROFILE_ID || job.contentIndexVersion !== CONTENT_INDEX_VERSION) throw new Error("CONTENT_INDEX_JOB_INVALID");
+    const version = await ctx.db.get(args.versionId);
+    if (!version || version.sha256 !== args.sourceSha256 || args.indexVersion !== CONTENT_INDEX_VERSION || !/^[a-f0-9]{64}$/.test(args.manifestSha256) || args.warnings.length > 20 || args.warnings.some((warning) => warning.length > 500)) throw new Error("CONTENT_INDEX_RESULT_INVALID");
+    assertContentIndexPages(args.pages.map((page) => ({ ...page, previewStorageId: String(page.previewStorageId), featureStorageId: page.featureStorageId ? String(page.featureStorageId) : undefined })), args.status === "indexed");
+    assertContentIndexEvidence(args.rawEvidence);
+    const completionPayload = {
+      indexVersion: args.indexVersion, sourceSha256: args.sourceSha256, status: args.status, warnings: args.warnings,
+      rawEvidence: args.rawEvidence, pages: args.pages, manifestSha256: args.manifestSha256,
+    };
+    const completion = { ...completionPayload, completionFingerprint: stableJson(completionPayload) };
+    const existing = job.outputStorageId;
+    if (job.state === "succeeded") {
+      if (existing === args.manifestStorageId && version.contentIndexManifestSha256 === args.manifestSha256 && job.result?.completionFingerprint === completion.completionFingerprint) return { status: "already_succeeded" as const };
+      throw new Error("DUPLICATE_COMPLETION_CONFLICT");
+    }
+    const now = Date.now();
+    if (job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, args.workerId, now)) throw new Error("LEASE_NOT_ACTIVE");
+    for (const page of args.pages) await ctx.db.insert("versionPages", { versionId: args.versionId, ...page });
+    await ctx.db.patch(args.versionId, {
+      pageCount: args.pages.length, contentIndexState: "ready", contentIndexManifestStorageId: args.manifestStorageId,
+      contentIndexManifestSha256: args.manifestSha256,
+    });
+    await ctx.db.patch(args.jobId, { state: "succeeded", outputStorageId: args.manifestStorageId, result: completion, leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now });
+    return { status: "succeeded" as const };
+  },
+});
+
 export const fail = mutation({
   args: { workerToken: v.string(), workerId: v.string(), jobId: v.id("jobs"), error: v.string(), retryable: v.boolean() },
   handler: async (ctx, args) => {
@@ -152,6 +216,7 @@ export const fail = mutation({
     });
     if (job.issuanceId && !shouldRetry) await ctx.db.patch(job.issuanceId, { status: "failed" });
     if (job.caseId && !shouldRetry) await ctx.db.patch(job.caseId, { state: "failed", completedAt: now });
+    if (job.type === "content_index" && job.versionId && !shouldRetry) await ctx.db.patch(job.versionId, { contentIndexState: "failed" });
   },
 });
 

@@ -42,6 +42,33 @@ export interface VersionStamp {
   workerVersion?: string;
 }
 
+/**
+ * Immutable, PII-free source-content index contracts.  These records describe
+ * bytes and rendered pages only; filenames, extracted text, recipients, and
+ * trace identities are intentionally out of scope.
+ */
+export const SOURCE_CONTENT_INDEX_VERSION = "source-content-index-v1" as const;
+export const PAGE_FINGERPRINT_VERSION = "perceptual-page-v1" as const;
+
+export interface SourceIndexPageManifest {
+  /** Dense, zero-based order in the immutable source version. */
+  pageIndex: number;
+  sourcePageSha256: string;
+  pHash: string;
+  dHash: string;
+  width: number;
+  height: number;
+  fingerprintVersion: typeof PAGE_FINGERPRINT_VERSION;
+}
+
+export interface SourceIndexManifest {
+  indexVersion: typeof SOURCE_CONTENT_INDEX_VERSION;
+  sourceSha256: string;
+  mimeType: string;
+  pages: readonly SourceIndexPageManifest[];
+  warnings: readonly string[];
+}
+
 /** A canonical 16-byte lowercase hexadecimal representation. */
 export function isTraceHandle(value: string): boolean {
   return /^[a-f0-9]{32}$/.test(value);

@@ -139,6 +139,7 @@ class FakeClient:
         self.failed: tuple[str, bool] | None = None
         self.trace_candidates: list[dict] = []
         self.completed_cases: list[str] = []
+        self.completed_indexes: list[dict] = []
         self.recovered = 0
         self.requeued = 0
         self.job = ClaimedJob("jobs:1", "key", "personalize", "storage:1", "image-v1", 9_999_999)
@@ -198,6 +199,11 @@ class FakeClient:
         self.completed = {"storageId": output_storage_id, "sha256": output_sha256, "result": result}
         return {"status": "succeeded"}
 
+    def complete_content_index(self, worker_id: str, job_id: str, result: dict) -> dict:
+        self.calls.append("complete-content-index")
+        self.completed_indexes.append(result)
+        return {"status": "succeeded"}
+
     def fail(self, worker_id: str, job_id: str, error: str, retryable: bool) -> None:
         self.calls.append("fail")
         self.failed = (error, retryable)
@@ -236,6 +242,30 @@ def test_run_once_personalizes_hashes_direct_uploads_and_keeps_secret_out_of_res
     assert result["carrierEvidence"]["raw"]["wmCode"] == 42
     assert base64.b64decode(env["WORKER_PROFILE_IMAGE_V1_SECRET_BASE64"]) not in str(result).encode()
     assert "secret" not in result
+
+
+def test_content_index_runs_without_a_profile_secret_and_uploads_manifest_previews_and_features() -> None:
+    client = FakeClient(png_bytes())
+    client.job = ClaimedJob("jobs:index", "index-key", "content_index", "storage:source", "source-content-index-v1", 9_999_999)
+    def index_input(worker_id: str, job_id: str) -> dict:
+        client.calls.append("input")
+        return {
+            "inputUrl": "https://storage.example/input", "mime": "image/png", "inputSha256": hashlib.sha256(client.source).hexdigest(),
+            "versionId": "documentVersions:immutable", "indexVersion": "source-content-index-v1", "maxPages": 200,
+        }
+    client.input = index_input  # type: ignore[method-assign]
+    def index_upload(upload_url: str, data: bytes, mime_type: str) -> str:
+        client.calls.append(f"upload:{mime_type}")
+        return f"storage:{len(client.calls)}"
+    client.upload_output = index_upload  # type: ignore[method-assign]
+
+    outcome = runner_for(client, {key: value for key, value in environment().items() if "PROFILE_" not in key}).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.completed_indexes[0]["status"] == "indexed"
+    assert client.completed_indexes[0]["pages"][0]["pageIndex"] == 0
+    assert "upload:image/png" in client.calls
+    assert client.calls.count("upload:application/json") == 2
 
 
 def test_maintenance_uses_server_controlled_lease_recovery_before_retry_requeue() -> None:

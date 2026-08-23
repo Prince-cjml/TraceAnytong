@@ -142,6 +142,18 @@ describe("control-plane public handlers", () => {
     await expect(otherViewer.query(api.webSessions.getTileDownloadUrl, { sessionId: fixture.sessionId })).rejects.toThrow("FORBIDDEN");
   });
 
+  it("lists only the viewer's own bounded downloadable copies without trace bindings", async () => {
+    const t = convexTest(schema, modules);
+    await seedAccessFixture(t);
+    const viewer = t.withIdentity({ subject: "access-recipient", email: "access-recipient@fixture.invalid" });
+    const copies = await viewer.query(api.issuances.listAvailable, {});
+
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ title: "Access source", status: "ready", ready: true });
+    expect(Object.keys(copies[0])).not.toContain("traceHandle");
+    expect(Object.keys(copies[0])).not.toContain("derivedStorageId");
+  });
+
   it("makes duplicate completion idempotent only for the original output storage object", async () => {
     const t = convexTest(schema, modules);
     const job = await t.run(async (ctx) => {
@@ -169,6 +181,45 @@ describe("control-plane public handlers", () => {
     await expect(t.mutation(api.jobs.complete, {
       ...args, outputStorageId: job.conflictingOutputStorageId,
     })).rejects.toThrow("DUPLICATE_COMPLETION_CONFLICT");
+  });
+
+  it("leases, validates, atomically completes, and exact-retries a source content index", async () => {
+    const t = convexTest(schema, modules);
+    const fixture = await t.run(async (ctx) => {
+      const now = Date.now();
+      const [sourceStorageId, previewStorageId, featureStorageId, manifestStorageId, changedManifestStorageId] = await Promise.all([
+        ctx.storage.store(new Blob(["source index fixture"])), ctx.storage.store(new Blob(["preview"])), ctx.storage.store(new Blob(["feature"])),
+        ctx.storage.store(new Blob(["manifest"])), ctx.storage.store(new Blob(["changed manifest"])),
+      ]);
+      const orgId = await ctx.db.insert("organizations", { name: "Index organization", slug: "content-index", createdAt: now });
+      const issuerId = await ctx.db.insert("users", { orgId, authSubject: "content-index-issuer", displayName: "Content index issuer", email: "content-index@fixture.invalid", role: "issuer", status: "active", createdAt: now });
+      const documentId = await ctx.db.insert("documents", { orgId, title: "Indexed source", classification: "internal", ownerId: issuerId, createdAt: now, updatedAt: now });
+      const versionId = await ctx.db.insert("documentVersions", {
+        documentId, sourceStorageId, sha256: "a".repeat(64), mime: "image/png", size: 20, fingerprintVersion: "sha256-prefix-v1", coarseFingerprint: "a".repeat(32),
+        contentIndexState: "queued", contentIndexVersion: "source-content-index-v1", createdAt: now,
+      });
+      const jobId = await ctx.db.insert("jobs", {
+        orgId, jobKey: "content-index-job", type: "content_index", inputStorageId: sourceStorageId, versionId, contentIndexVersion: "source-content-index-v1",
+        profileId: "source-content-index-v1", state: "running", workerClass: "cpu", leaseOwner: "content-index-worker", leaseExpiresAt: now + 60_000,
+        nextAttemptAt: now, attempts: 1, createdAt: now, updatedAt: now,
+      });
+      await ctx.db.patch(versionId, { contentIndexJobId: jobId });
+      return { versionId, jobId, previewStorageId, featureStorageId, manifestStorageId, changedManifestStorageId };
+    });
+    const args = {
+      workerToken: WORKER_TOKEN, workerId: "content-index-worker", jobId: fixture.jobId, versionId: fixture.versionId,
+      manifestStorageId: fixture.manifestStorageId, manifestSha256: "c".repeat(64), sourceSha256: "a".repeat(64), status: "indexed" as const,
+      indexVersion: "source-content-index-v1", warnings: [], rawEvidence: { indexVersion: "source-content-index-v1", input: { sha256: "a".repeat(64) }, result: { pageCount: 1 } },
+      pages: [{ pageIndex: 0, previewStorageId: fixture.previewStorageId, sourcePageSha256: "b".repeat(64), pHash: "0123456789abcdef", dHash: "fedcba9876543210", fingerprintVersion: "perceptual-page-v1", featureStorageId: fixture.featureStorageId, featureSha256: "d".repeat(64), width: 100, height: 200 }],
+    };
+    await expect(t.mutation(api.jobs.complete, { workerToken: WORKER_TOKEN, workerId: "content-index-worker", jobId: fixture.jobId, result: {} })).rejects.toThrow("CONTENT_INDEX_REQUIRES_SPECIALIZED_COMPLETION");
+    await expect(t.mutation(api.jobs.completeContentIndex, args)).resolves.toEqual({ status: "succeeded" });
+    await expect(t.mutation(api.jobs.completeContentIndex, args)).resolves.toEqual({ status: "already_succeeded" });
+    await expect(t.mutation(api.jobs.completeContentIndex, { ...args, manifestStorageId: fixture.changedManifestStorageId })).rejects.toThrow("DUPLICATE_COMPLETION_CONFLICT");
+    const persisted = await t.run(async (ctx) => ({ version: await ctx.db.get(fixture.versionId), pages: await ctx.db.query("versionPages").withIndex("by_version_page", (q) => q.eq("versionId", fixture.versionId)).collect() }));
+    expect(persisted.version).toMatchObject({ contentIndexState: "ready", contentIndexManifestSha256: "c".repeat(64), pageCount: 1 });
+    expect(persisted.pages).toHaveLength(1);
+    expect(persisted.pages[0]).toMatchObject({ pageIndex: 0, dHash: "fedcba9876543210" });
   });
 
   it("recovers an expired active lease through the indexed recovery and retry path before it is claimable", async () => {

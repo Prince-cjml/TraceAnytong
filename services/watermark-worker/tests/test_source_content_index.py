@@ -7,6 +7,7 @@ from PIL import Image
 from app.fingerprint.content_index import (
     PAGE_FINGERPRINT_VERSION,
     SOURCE_CONTENT_INDEX_VERSION,
+    canonical_page_previews,
     index_source_content,
 )
 from app.models import Artifact
@@ -66,6 +67,16 @@ def test_pdf_index_renders_ordered_page_records_with_declared_tool_version() -> 
     assert result.raw_evidence["renderer"]["rasterScale"] == 2.0
     assert result.raw_evidence["result"] == {"pageCount": 2, "pageNumbers": [1, 2]}
     assert "private-person.pdf" not in str(result.to_dict())
+
+
+def test_canonical_page_previews_follow_indexed_page_order_without_filename_metadata() -> None:
+    artifact = _pdf_artifact()
+    index = index_source_content(artifact)
+    previews = canonical_page_previews(artifact)
+
+    assert len(previews) == len(index.pages) == 2
+    assert all(preview.startswith(b"\x89PNG\r\n\x1a\n") for preview in previews)
+    assert b"private-person.pdf" not in b"".join(previews)
 
 
 @pytest.mark.parametrize(

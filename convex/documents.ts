@@ -5,6 +5,13 @@ import { writeAuditEvent } from "./audit";
 import { assertSupportedArtifactMime } from "./artifactRules";
 
 const sha256 = v.string();
+const SOURCE_CONTENT_INDEX_VERSION = "source-content-index-v1";
+const CONTENT_INDEX_PROFILE_ID = "source-content-index-v1";
+
+async function contentIndexJobKey(versionId: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`content-index|${versionId}|${SOURCE_CONTENT_INDEX_VERSION}`));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function assertSha256(value: string): void {
   if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("INVALID_SHA256");
@@ -39,7 +46,15 @@ export const addVersion = mutation({
     if (!document) throw new Error("NOT_FOUND");
     sameOrganization(document.orgId, user);
     const now = Date.now();
-    const versionId = await ctx.db.insert("documentVersions", { ...args, createdAt: now });
+    const versionId = await ctx.db.insert("documentVersions", {
+      ...args, contentIndexState: "queued", contentIndexVersion: SOURCE_CONTENT_INDEX_VERSION, createdAt: now,
+    });
+    const contentIndexJobId = await ctx.db.insert("jobs", {
+      orgId: user.orgId, jobKey: await contentIndexJobKey(String(versionId)), type: "content_index", inputStorageId: args.sourceStorageId,
+      versionId, contentIndexVersion: SOURCE_CONTENT_INDEX_VERSION, profileId: CONTENT_INDEX_PROFILE_ID, workerClass: "cpu",
+      state: "queued", nextAttemptAt: now, attempts: 0, createdAt: now, updatedAt: now,
+    });
+    await ctx.db.patch(versionId, { contentIndexJobId });
     await ctx.db.patch(args.documentId, { currentVersionId: versionId, updatedAt: now });
     await writeAuditEvent(ctx, { orgId: user.orgId, actorId: user._id, action: "document.version_created", entityType: "documentVersion", entityId: versionId, detailsHash: args.sha256 });
     return versionId;

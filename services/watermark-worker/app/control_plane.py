@@ -131,6 +131,9 @@ class ConvexWorkerClient:
             args["outputSha256"] = output_sha256
         return self._mutation("jobs:complete", args)
 
+    def complete_content_index(self, worker_id: str, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        return self._mutation("jobs:completeContentIndex", {"workerId": worker_id, "jobId": job_id, **result})
+
     def record_trace_candidate(self, worker_id: str, job_id: str, args: dict[str, Any]) -> dict[str, Any]:
         return self._mutation("traceCases:recordCandidate", {"workerId": worker_id, "jobId": job_id, **args})
 

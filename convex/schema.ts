@@ -33,11 +33,15 @@ export default defineSchema({
   }).index("by_org_updated", ["orgId", "updatedAt"]),
   documentVersions: defineTable({
     documentId: v.id("documents"), sourceStorageId: v.id("_storage"), sha256: v.string(), mime: v.string(), size: v.number(),
-    pageCount: v.optional(v.number()), fingerprintVersion: v.string(), coarseFingerprint: v.string(), createdAt: v.number(),
+    pageCount: v.optional(v.number()), fingerprintVersion: v.string(), coarseFingerprint: v.string(),
+    contentIndexJobId: v.optional(v.id("jobs")),
+    contentIndexState: v.optional(v.union(v.literal("queued"), v.literal("processing"), v.literal("ready"), v.literal("failed"))),
+    contentIndexVersion: v.optional(v.string()), contentIndexManifestStorageId: v.optional(v.id("_storage")), contentIndexManifestSha256: v.optional(v.string()),
+    createdAt: v.number(),
   }).index("by_document_created", ["documentId", "createdAt"]).index("by_sha256", ["sha256"]),
   versionPages: defineTable({
-    versionId: v.id("documentVersions"), pageIndex: v.number(), previewStorageId: v.id("_storage"), pHash: v.string(),
-    featureStorageId: v.optional(v.id("_storage")), width: v.number(), height: v.number(),
+    versionId: v.id("documentVersions"), pageIndex: v.number(), previewStorageId: v.id("_storage"), sourcePageSha256: v.string(), pHash: v.string(), dHash: v.string(),
+    fingerprintVersion: v.string(), featureStorageId: v.optional(v.id("_storage")), featureSha256: v.optional(v.string()), width: v.number(), height: v.number(),
   }).index("by_version_page", ["versionId", "pageIndex"]),
   watermarkProfiles: defineTable({
     profileId: v.string(), carrier: v.union(v.literal("image"), v.literal("screen"), v.literal("structure")),
@@ -52,6 +56,7 @@ export default defineSchema({
     issuedAt: v.number(), downloadedAt: v.optional(v.number()),
   }).index("by_traceHandle", ["traceHandle"]).index("by_wmCode", ["wmCode"])
     .index("by_version_user", ["versionId", "userId"]).index("by_version_time", ["versionId", "issuedAt"])
+    .index("by_org_issued", ["orgId", "issuedAt"])
     .index("by_org_profile", ["orgId", "profileId"])
     .index("by_org_profile_status", ["orgId", "profileId", "status"]),
   webSessions: defineTable({
@@ -63,6 +68,7 @@ export default defineSchema({
   jobs: defineTable({
     orgId: v.id("organizations"), jobKey: v.string(), type: v.string(), inputStorageId: v.optional(v.id("_storage")),
     outputStorageId: v.optional(v.id("_storage")), issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")), webSessionId: v.optional(v.id("webSessions")),
+    versionId: v.optional(v.id("documentVersions")), contentIndexVersion: v.optional(v.string()),
     profileId: v.string(), state: jobState, workerClass: v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid")),
     // Immutable server-resolved bindings for trace jobs. It never contains
     // recipient data, URLs, profile keys, or other secret material.

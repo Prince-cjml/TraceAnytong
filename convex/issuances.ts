@@ -78,6 +78,30 @@ export const getDownloadUrl = query({
   },
 });
 
+/**
+ * Bounded, role-authorized issuance projection for the operator download
+ * surface. It intentionally excludes trace handles, watermark codes, storage
+ * IDs, recipient emails, and worker data.
+ */
+export const listAvailable = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requireRole(ctx, ["viewer", "issuer", "investigator", "admin"]);
+    const issuances = await ctx.db.query("issuances").withIndex("by_org_issued", (q) => q.eq("orgId", user.orgId)).order("desc").take(100);
+    const visible = user.role === "viewer" ? issuances.filter((issuance) => issuance.userId === user._id) : issuances;
+    return await Promise.all(visible.map(async (issuance) => {
+      const version = await ctx.db.get(issuance.versionId);
+      const document = version ? await ctx.db.get(version.documentId) : null;
+      if (!version || !document) return null;
+      return {
+        issuanceId: issuance._id, documentId: document._id, title: document.title, mime: version.mime,
+        status: issuance.status, issuedAt: issuance.issuedAt, downloadedAt: issuance.downloadedAt,
+        ready: issuance.status === "ready" && Boolean(issuance.derivedStorageId),
+      };
+    })).then((items) => items.filter((item): item is NonNullable<typeof item> => item !== null));
+  },
+});
+
 export const markDownloaded = mutation({
   args: { issuanceId: v.id("issuances") },
   handler: async (ctx, args) => {

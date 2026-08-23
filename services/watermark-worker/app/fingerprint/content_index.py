@@ -123,6 +123,48 @@ def _page_fingerprint(page_number: int, image: Image.Image, encoded_bytes: bytes
     )
 
 
+def _canonical_png(image: Image.Image) -> bytes:
+    """Encode a page preview without source metadata or ambient encoder options."""
+    output = io.BytesIO()
+    image.convert("RGB").save(output, format="PNG", optimize=False, compress_level=9)
+    return output.getvalue()
+
+
+def canonical_page_previews(artifact: Artifact) -> tuple[bytes, ...]:
+    """Produce worker-uploadable canonical page previews for a successful index.
+
+    This is deliberately separate from ``to_dict``: preview bytes never enter
+    an index manifest or a worker-visible candidate binding.
+    """
+    mime_type = _normalized_mime(artifact.mime_type)
+    if mime_type in {"image/jpeg", "image/png", "image/webp"}:
+        try:
+            with Image.open(io.BytesIO(artifact.data)) as image:
+                image.load()
+                return (_canonical_png(image),)
+        except Exception:
+            return ()
+    if mime_type != "application/pdf":
+        return ()
+    document: fitz.Document | None = None
+    try:
+        document = fitz.open(stream=artifact.data, filetype="pdf")
+        if document.needs_pass:
+            return ()
+        previews: list[bytes] = []
+        for page in document:
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(PDF_RENDER_SCALE, PDF_RENDER_SCALE), alpha=False)
+            with Image.open(io.BytesIO(pixmap.tobytes("png"))) as image:
+                image.load()
+                previews.append(_canonical_png(image))
+        return tuple(previews)
+    except Exception:
+        return ()
+    finally:
+        if document is not None:
+            document.close()
+
+
 def _base_evidence(artifact: Artifact, mime_type: str) -> dict[str, object]:
     return {
         "indexVersion": SOURCE_CONTENT_INDEX_VERSION,

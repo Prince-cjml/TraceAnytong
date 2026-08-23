@@ -87,6 +87,14 @@ def test_trace_writes_bind_worker_and_active_job_identifiers() -> None:
     assert b'"path":"traceCases:complete"' in requests[1].content
 
 
+def test_content_index_completion_uses_the_specialized_lease_bound_mutation() -> None:
+    requests: list[httpx.Request] = []
+    client = ConvexWorkerClient("https://joyous-anaconda-773.convex.cloud", "test-token", httpx.Client(transport=httpx.MockTransport(lambda request: (requests.append(request), httpx.Response(200, json={"status": "success", "value": {"status": "succeeded"}}))[1])))
+    client.complete_content_index("worker-a", "jobs:index", {"versionId": "versions:1", "status": "indexed"})
+    assert b'"path":"jobs:completeContentIndex"' in requests[0].content
+    assert b'"workerId":"worker-a"' in requests[0].content
+
+
 def test_recovery_calls_are_worker_token_gated_and_require_counts() -> None:
     requests: list[httpx.Request] = []
 

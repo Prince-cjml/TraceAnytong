@@ -13,7 +13,7 @@ export const DEMO_USERS = [
   { authSubject: "traceanytong-dev-demo:viewer", displayName: "Demo viewer", email: "viewer@traceanytong-demo.invalid", role: "viewer" as const },
   { authSubject: "traceanytong-dev-demo:issuer", displayName: "Demo issuer", email: "issuer@traceanytong-demo.invalid", role: "issuer" as const },
   { authSubject: "traceanytong-dev-demo:investigator", displayName: "Demo investigator", email: "investigator@traceanytong-demo.invalid", role: "investigator" as const },
-  { authSubject: "traceanytong-dev-demo:admin", displayName: "Demo administrator", email: "admin@traceanytong-demo.invalid", role: "admin" as const },
+  { authSubject: "traceanytong-dev-demo:admin", displayName: "tongtong", email: "admin@traceanytong-demo.invalid", role: "admin" as const },
 ] as const;
 
 export type DemoProfileFixture = {

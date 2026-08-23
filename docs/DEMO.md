@@ -1,22 +1,27 @@
 # Demo guide
 
-## Investigator UI
+The interactive demo uses the real control plane. Fixture cards rendered when
+there is no authenticated session are deliberately non-operational and cannot
+create, download, or trace files.
 
-1. Open the Documents view and select **Issue protected copy**.
-2. Generate the fixture issuance, which displays the anonymous-trace guarantee.
-3. Open Trace, choose a leak fixture, and select **Preserve and analyze**.
-4. Advance the processing timeline to inspect the ranked candidate, correlation margin, raw detector evidence, and immutable evidence metadata.
-5. Use **Preview insufficient-evidence state** to confirm ambiguous evidence is not attributed.
+1. Configure WorkOS and Convex as described in [RUNBOOK.md](RUNBOOK.md), then
+   bootstrap the development fixtures. The fixture administrator display name
+   is `tongtong`.
+2. Start `traceanytong-worker run` with the worker token and the required
+   immutable profile secrets. Wait for its normal lease loop to be healthy.
+3. Sign in, preserve a PNG/JPEG/WebP/PDF/DOCX/PPTX source in **Documents**, and
+   select a recipient plus a compatible profile to queue a protected copy.
+4. Wait for both the source index and personalization jobs. The protected copy
+   appears in the **Protected copies** registry only after the worker has bound
+   its immutable derivative.
+5. Click **Download copy**. The control plane authorizes the user before
+   minting the storage URL and records the download only for a successful
+   authorization.
+6. As an investigator or administrator, use **Trace** to preserve actual leak
+   evidence and follow the case queue. Image attribution remains subject to
+   the server’s frozen fingerprint and margin checks. Screen correlation is
+   retained as raw evidence but intentionally remains insufficient until the
+   later immutable page-matching phase.
 
-## Worker API
-
-Start the worker as described in the runbook, then request `GET /healthz`. The response reports protocol, carrier, detector, and worker versions. The adapter endpoints return typed unsupported-input errors rather than silently altering invalid files.
-
-## Benchmark
-
-```text
-python -m pytest bench/tests -q
-python -m bench.runners.run --fixtures bench/fixtures --output bench/reports/latest
-```
-
-Inspect `bench/reports/latest/report.json`, `summary.md`, `matrix.csv`, and `samples/`. The report distinguishes positive results from the negative corpus and must show zero confirmed negative attributions.
+Never use the browser fixture preview as proof that a protected file was
+generated or that attribution occurred.
