@@ -6,6 +6,7 @@ import { requireWorker } from "./workerAuth";
 import { assertEvidenceScores, assertRawEvidence, assertTraceHandle, parseTraceThresholds, resolveTraceDecision } from "./traceDecisionRules";
 import { leaseIsActive } from "./jobRules";
 import { assertSupportedArtifactMime } from "./artifactRules";
+import { assertCandidateProfileMatchesTraceJob } from "./traceCaseRules";
 
 const decision = v.union(v.literal("attributed"), v.literal("insufficient"), v.literal("no_match"));
 
@@ -18,11 +19,12 @@ function assertSha256(value: string): void {
   if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("INVALID_SHA256");
 }
 
-async function requireActiveTraceLease(ctx: any, workerId: string, jobId: any, caseId: any): Promise<void> {
+async function requireActiveTraceLease(ctx: any, workerId: string, jobId: any, caseId: any): Promise<any> {
   const job = await ctx.db.get(jobId);
   if (!job || job.type !== "trace" || job.caseId !== caseId || job.state !== "running" || !leaseIsActive(job.leaseOwner, job.leaseExpiresAt, workerId, Date.now())) {
     throw new Error("TRACE_JOB_LEASE_NOT_ACTIVE");
   }
+  return job;
 }
 
 export const create = mutation({
@@ -63,7 +65,7 @@ export const recordCandidate = mutation({
   },
   handler: async (ctx, args) => {
     requireWorker(args.workerToken);
-    await requireActiveTraceLease(ctx, args.workerId, args.jobId, args.caseId);
+    const traceJob = await requireActiveTraceLease(ctx, args.workerId, args.jobId, args.caseId);
     const traceCase = await ctx.db.get(args.caseId);
     if (!traceCase) throw new Error("NOT_FOUND");
     assertTraceHandle(args.traceHandle);
@@ -81,6 +83,7 @@ export const recordCandidate = mutation({
     if (!provenance || provenance.orgId !== traceCase.orgId || provenance.traceHandle !== args.traceHandle) {
       throw new Error("CANDIDATE_PROVENANCE_MISMATCH");
     }
+    assertCandidateProfileMatchesTraceJob(traceJob.profileId, provenance.profileId);
     const profile = await ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", provenance.profileId)).unique();
     if (!profile || profile.status !== "active" || profile.profileVersion !== args.profileVersion || profile.protocolVersion !== args.protocolVersion) {
       throw new Error("CANDIDATE_PROFILE_MISMATCH");
