@@ -14,6 +14,8 @@ The UI reads `NEXT_PUBLIC_CONVEX_URL`; worker-only `WORKER_CONVEX_URL` and `WORK
 
 For every active profile that the worker is allowed to process, configure `WORKER_PROFILE_<PROFILE_ID>_SECRET_BASE64` and the exact immutable `WORKER_PROFILE_<PROFILE_ID>_VERSION`. Screen profiles are required for protected-page tiles: creating a web session queues a `web_tile` job, and the protected UI remains fail-closed until its worker-generated PNG has been bound to that session. The worker defaults to no inherited HTTP proxy; set `WORKER_HTTP_TRUST_ENV=true` only where an explicitly managed egress proxy is required.
 
+For personalized files, configure carrier profiles that match the immutable source MIME: `image` profiles are only for JPEG, PNG, and WebP; `screen` profiles are only for PDF, DOCX, and PPTX. `structure` profiles support detector evidence and cannot issue a derivative. Issuance rejects converted output formats—the output remains the source's native MIME.
+
 ## Worker operation
 
 The production container starts `traceanytong-worker run`. It performs lease maintenance before each claim, processes successful jobs without an artificial delay, waits after idle or lease-loss outcomes, and applies exponential backoff after failed outcomes. A lease loss is recoverable and is never reported as a new failure by the daemon. After `WORKER_MAX_CONSECUTIVE_FAILURES` failed outcomes (default `5`), the process exits with status `1` so the platform can restart it instead of hot-looping.
