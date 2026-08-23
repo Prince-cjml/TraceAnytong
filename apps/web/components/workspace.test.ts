@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canManageTraceCases, traceResultCopy, workspaceInitials } from "./workspace";
+import { canManageTraceCases, traceResultCopy, workspaceInitials, workspaceSessionAction } from "./workspace";
 
 describe("trace result presentation", () => {
   it("keeps an insufficient decision explicitly non-attributive", () => {
@@ -33,5 +33,14 @@ describe("live trace access", () => {
     expect(canManageTraceCases("issuer")).toBe(false);
     expect(canManageTraceCases("viewer")).toBe(false);
     expect(canManageTraceCases(undefined)).toBe(false);
+  });
+});
+
+describe("workspace session action", () => {
+  it("keeps the public sign-in gate and an authenticated sign-out action mutually exclusive", () => {
+    expect(workspaceSessionAction(false, false)).toBeNull();
+    expect(workspaceSessionAction(true, false)).toEqual({ href: "/sign-in", label: "Sign in" });
+    expect(workspaceSessionAction(false, true)).toEqual({ href: "/sign-out", label: "Sign out" });
+    expect(workspaceSessionAction(true, true)).toEqual({ href: "/sign-out", label: "Sign out" });
   });
 });

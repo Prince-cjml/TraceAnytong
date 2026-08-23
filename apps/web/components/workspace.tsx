@@ -29,6 +29,12 @@ export function canManageTraceCases(role?: string): boolean {
   return role === "investigator" || role === "admin";
 }
 
+export function workspaceSessionAction(signInAvailable: boolean, signOutAvailable: boolean): { href: "/sign-in" | "/sign-out"; label: "Sign in" | "Sign out" } | null {
+  if (signOutAvailable) return { href: "/sign-out", label: "Sign out" };
+  if (signInAvailable) return { href: "/sign-in", label: "Sign in" };
+  return null;
+}
+
 export function workspaceInitials(label: string): string {
   return label.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
 }
@@ -97,10 +103,10 @@ function LiveWorkspace({ initialView, traceCaseId, role }: { initialView: View; 
   const identity = dashboard ? { organizationName: dashboard.organizationName, memberDisplayName: dashboard.memberDisplayName, openTraceCases: dashboard.traceCases ? `${dashboard.traceCases.open.value}${dashboard.traceCases.open.capped ? "+" : ""}` : undefined } satisfies LiveWorkspaceIdentity : undefined;
   const liveTraceQueue = canManageTrace ? <TraceCaseQueue selectedCaseId={activeCaseId} onSelectCase={openCase} /> : undefined;
   const liveUploader = canManageTrace ? <TraceEvidenceUploader onCaseCreated={openCase} /> : undefined;
-  return <WorkspaceShell initialView={initialView} documentState={documentState} liveMode liveRole={role} liveIdentity={identity} liveTrace={liveTrace} liveUploader={liveUploader} liveTraceQueue={liveTraceQueue} onClearLiveCase={clearCase} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} />;
+  return <WorkspaceShell initialView={initialView} documentState={documentState} liveMode liveRole={role} liveIdentity={identity} liveTrace={liveTrace} liveUploader={liveUploader} liveTraceQueue={liveTraceQueue} onClearLiveCase={clearCase} liveDocumentIntake={<DocumentIntake />} liveOnboarding={<Onboarding />} signOutAvailable />;
 }
 
-function WorkspaceShell({ initialView, documentState, liveMode = false, liveRole, liveIdentity, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase, liveDocumentIntake, liveOnboarding, signInAvailable = false }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveRole?: string; liveIdentity?: LiveWorkspaceIdentity; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode; signInAvailable?: boolean }) {
+function WorkspaceShell({ initialView, documentState, liveMode = false, liveRole, liveIdentity, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase, liveDocumentIntake, liveOnboarding, signInAvailable = false, signOutAvailable = false }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveRole?: string; liveIdentity?: LiveWorkspaceIdentity; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode; signInAvailable?: boolean; signOutAvailable?: boolean }) {
   const [view, setView] = useState<View>(initialView);
   const [issueOpen, setIssueOpen] = useState(false);
   const [traceState, setTraceState] = useState<"upload" | "processing" | "result" | "insufficient">("upload");
@@ -109,9 +115,10 @@ function WorkspaceShell({ initialView, documentState, liveMode = false, liveRole
   const organizationName = liveMode ? liveIdentity?.organizationName ?? "Loading workspace…" : "Northstar Bio";
   const memberName = liveMode ? liveIdentity?.memberDisplayName ?? "Loading member…" : "Mara Klein";
   const traceBadge = liveMode ? liveIdentity?.openTraceCases : "3";
+  const sessionAction = workspaceSessionAction(signInAvailable, signOutAvailable);
   return <main className="app-shell">
     <aside className="sidebar"><a className="brand" href="/"><i>t</i><span>trace<span>any</span>tong</span></a><div className="org"><span className="org-mark">{workspaceInitials(organizationName)}</span><span><b>{organizationName}</b><small>Forensics workspace</small></span><button aria-label="Switch workspace">⌄</button></div><nav>{nav.map((item) => <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => setView(item.id)}><span>{item.icon}</span>{item.label}{item.id === "trace" && traceBadge && <em>{traceBadge}</em>}</button>)}</nav><div className="sidebar-foot"><div className="profile"><span>{workspaceInitials(memberName)}</span><div><b>{memberName}</b><small>{liveIdentity ? "Authenticated member" : "Investigator"}</small></div><button>···</button></div></div></aside>
-    <section className="stage"><header className="topbar"><div><p className="crumb">{organizationName} <span>/</span> {title}</p><h1>{view === "trace" ? "Trace console" : title}</h1></div><div className="top-actions">{signInAvailable && <a className="secondary sign-in-link" href="/sign-in">Sign in</a>}<button className="icon-button" aria-label="Notifications">♧<b /></button><button className="avatar">{workspaceInitials(memberName)}</button></div></header>
+    <section className="stage"><header className="topbar"><div><p className="crumb">{organizationName} <span>/</span> {title}</p><h1>{view === "trace" ? "Trace console" : title}</h1></div><div className="top-actions">{sessionAction && <a className="secondary auth-link" href={sessionAction.href}>{sessionAction.label}</a>}<button className="icon-button" aria-label="Notifications">♧<b /></button><button className="avatar">{workspaceInitials(memberName)}</button></div></header>
       {view === "overview" && <Overview onNavigate={setView} documentState={documentState} liveMode={liveMode} />}
       {view === "documents" && <Documents onIssue={() => setIssueOpen(true)} documentState={documentState} liveDocumentIntake={liveDocumentIntake} />}
       {view === "trace" && <TraceConsole state={traceState} setState={setTraceState} selected={selected} setSelected={setSelected} liveMode={liveMode} liveRole={liveRole} liveTrace={liveTrace} liveUploader={liveUploader} liveTraceQueue={liveTraceQueue} onClearLiveCase={onClearLiveCase} />}
