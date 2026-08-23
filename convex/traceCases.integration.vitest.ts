@@ -19,6 +19,7 @@ const SCREEN_PROFILE_ID = "screen-profile-integration-v1";
 const SCREEN_TRACE_HANDLE = "00112233445566778899aabbccddeeff";
 const SCREEN_ISSUANCE_TRACE_HANDLE = "11223344556677889900aabbccddeeff";
 const OUTPUT_SHA256 = "a".repeat(64);
+const OUTPUT_DHASH = "0123456789abcdef";
 const SCREEN_OUTPUT_SHA256 = "c".repeat(64);
 const FIXTURE_TIME = 1_725_000_000_000;
 const FIXTURE_EXPIRY = 4_000_000_000_000;
@@ -34,6 +35,7 @@ const modules = import.meta.glob([
 type Seed = {
   caseEvidenceStorageId: any;
   candidateIssuanceId: any;
+  candidateJobId: any;
   outOfSnapshotIssuanceId: any;
 };
 
@@ -79,10 +81,16 @@ async function seedTraceFixture(t: ReturnType<typeof convexTest>): Promise<Seed>
     const candidateJobId = await ctx.db.insert("jobs", {
       orgId, jobKey: "seeded-succeeded-candidate", type: "personalize", inputStorageId: sourceStorageId,
       issuanceId: candidateIssuanceId, profileId: PROFILE_ID, state: "succeeded", workerClass: "cpu",
-      nextAttemptAt: now, attempts: 1, result: { outputSha256: OUTPUT_SHA256 }, createdAt: now, updatedAt: now,
+      nextAttemptAt: now, attempts: 1, result: {
+        outputSha256: OUTPUT_SHA256,
+        fingerprint: {
+          fingerprintVersion: "perceptual-v1", sha256: OUTPUT_SHA256, mimeType: "image/png",
+          dHash: OUTPUT_DHASH, width: 640, height: 480, bytes: 123_456,
+        },
+      }, createdAt: now, updatedAt: now,
     });
     await ctx.db.patch(candidateIssuanceId, { jobId: candidateJobId });
-    return { caseEvidenceStorageId, candidateIssuanceId, outOfSnapshotIssuanceId: undefined };
+    return { caseEvidenceStorageId, candidateIssuanceId, candidateJobId, outOfSnapshotIssuanceId: undefined };
   });
 }
 
@@ -183,11 +191,21 @@ describe("trace case handlers", () => {
     const traceJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === caseId));
     expect(traceJob).toBeDefined();
 
-    // Live provenance may change or new same-profile copies may be created after queueing.
+    // Live provenance and its worker result may change after queueing, but
+    // worker input remains the case-time snapshot.
     const outOfSnapshotIssuanceId = await t.run(async (ctx) => {
       const original: any = await ctx.db.get(seed.candidateIssuanceId);
       if (!original) throw new Error("missing seed issuance");
       await ctx.db.patch(seed.candidateIssuanceId, { issuedAt: original.issuedAt + 99, wmCode: 99 });
+      await ctx.db.patch(seed.candidateJobId, {
+        result: {
+          outputSha256: "e".repeat(64),
+          fingerprint: {
+            fingerprintVersion: "perceptual-v1", sha256: "e".repeat(64), mimeType: "image/png",
+            dHash: "fedcba9876543210", width: 1, height: 1,
+          },
+        },
+      });
       return ctx.db.insert("issuances", {
         ...original, _id: undefined, _creationTime: undefined, traceHandle: OUT_OF_SNAPSHOT_TRACE_HANDLE,
         wmCode: 100, issuedAt: original.issuedAt + 100, jobId: undefined,
@@ -206,6 +224,10 @@ describe("trace case handlers", () => {
     expect(input.candidates).toEqual([{
       traceHandle: SNAPSHOTTED_TRACE_HANDLE, scope: "issuance", createdAt: 1_725_000_000_000,
       issuanceId: seed.candidateIssuanceId, wmCode: 42, outputSha256: OUTPUT_SHA256,
+      outputFingerprint: {
+        fingerprintVersion: "perceptual-v1", sha256: OUTPUT_SHA256, mimeType: "image/png",
+        dHash: OUTPUT_DHASH, width: 640, height: 480,
+      },
     }]);
     expect(JSON.stringify(input.candidates)).not.toContain("recipient@integration.invalid");
     expect(input.candidates[0]).not.toHaveProperty("email");

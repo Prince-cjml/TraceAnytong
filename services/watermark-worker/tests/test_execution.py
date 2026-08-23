@@ -11,8 +11,10 @@ from pptx import Presentation
 from app.control_plane import ClaimedJob
 from app.errors import InputDownloadError, LeaseLostError
 from app.execution import JobRunner, WorkerSettings
+from app.carriers.image_code import ImageCodeCarrier
 from app.carriers.screen_tile import ScreenTileCarrier
 from app.carriers.structure import NativeStructureCarrier
+from app.fingerprint.perceptual import PerceptualFingerprinter
 from app.formats.registry import AdapterRegistry
 from app.models import Artifact, CarrierEvidence, CarrierProfile, TraceIdentity
 
@@ -30,6 +32,23 @@ def watermarked_png(wm_code: int) -> bytes:
     metadata = PngImagePlugin.PngInfo()
     metadata.add_text("TraceAnytong-wmCode", str(wm_code))
     image.save(out, "PNG", pnginfo=metadata)
+    return out.getvalue()
+
+
+def visual_watermarked_png(wm_code: int) -> bytes:
+    """A metadata-bearing image whose repeated visual code survives fixture transforms."""
+    image = Image.new("RGB", (512, 512), (120, 150, 180))
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    profile = CarrierProfile("image-v1", "profile-2026-08", "key-1", b"deterministic-worker-key", tile_size=64)
+    identity = TraceIdentity("0123456789abcdef0123456789abcdef", "issuance", "profile-2026-08", 1_725_000_000)
+    return ImageCodeCarrier().embed(Artifact(out.getvalue(), "image/png", "visual.png"), identity, profile, wm_code=wm_code).artifact.data
+
+
+def metadata_stripped_jpeg_resize(data: bytes) -> bytes:
+    image = Image.open(io.BytesIO(data)).convert("RGB").resize((384, 384), Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    image.save(out, "JPEG", quality=60, optimize=False)
     return out.getvalue()
 
 
@@ -377,6 +396,74 @@ def test_trace_job_never_requests_attribution_from_metadata_only_recovery() -> N
     assert outcome.status == "succeeded"
     assert client.trace_candidates[0]["fingerprintScore"] == 0.0
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+
+
+def test_trace_job_fuses_visual_code_with_frozen_perceptual_fingerprint_after_transform() -> None:
+    source = visual_watermarked_png(42)
+    transformed = metadata_stripped_jpeg_resize(source)
+    frozen_fingerprint = PerceptualFingerprinter().index(Artifact(source, "image/png", "visual.png"))
+    client = FakeClient(transformed)
+    client.job = ClaimedJob("jobs:trace-visual-fusion", "trace-visual-fusion-key", "trace", "storage:evidence", "image-v1", 9_999_999, case_id="cases:visual-fusion")
+    original_input = client.input
+
+    def visual_fusion_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:visual-fusion", "mime": "image/jpeg",
+            "candidates": [{
+                "issuanceId": "issuances:visual-fusion", "traceHandle": "0123456789abcdef0123456789abcdef",
+                "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": 42,
+                "outputSha256": hashlib.sha256(source).hexdigest(), "outputFingerprint": frozen_fingerprint,
+            }],
+        })
+        return payload
+
+    client.input = visual_fusion_input  # type: ignore[method-assign]
+    outcome = runner_for(client).run_once()
+
+    assert outcome.status == "succeeded"
+    candidate = client.trace_candidates[0]
+    assert candidate["requestedDecision"] == "attributed"
+    assert candidate["fingerprintScore"] >= JobRunner._MIN_IMAGE_PERCEPTUAL_SCORE
+    assert candidate["rawEvidence"]["imageCarrier"]["raw"]["recovery"] == "visual-raster"
+    assert candidate["rawEvidence"]["fingerprint"]["fingerprint_version"] == PerceptualFingerprinter.version
+    assert candidate["rawEvidence"]["attributionGate"] == {
+        "exactOutputSha256": False,
+        "visualRasterRecovery": True,
+        "minimumPerceptualScore": JobRunner._MIN_IMAGE_PERCEPTUAL_SCORE,
+        "perceptualFingerprintSupported": True,
+    }
+
+
+def test_trace_job_refuses_visual_code_when_frozen_perceptual_fingerprint_mismatches() -> None:
+    source = visual_watermarked_png(42)
+    transformed = metadata_stripped_jpeg_resize(source)
+    frozen_fingerprint = PerceptualFingerprinter().index(Artifact(source, "image/png", "visual.png"))
+    frozen_fingerprint["dHash"] = f"{int(frozen_fingerprint['dHash'], 16) ^ ((1 << 64) - 1):016x}"
+    client = FakeClient(transformed)
+    client.job = ClaimedJob("jobs:trace-visual-mismatch", "trace-visual-mismatch-key", "trace", "storage:evidence", "image-v1", 9_999_999, case_id="cases:visual-mismatch")
+    original_input = client.input
+
+    def mismatch_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:visual-mismatch", "mime": "image/jpeg",
+            "candidates": [{
+                "issuanceId": "issuances:visual-mismatch", "traceHandle": "0123456789abcdef0123456789abcdef",
+                "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": 42,
+                "outputSha256": hashlib.sha256(source).hexdigest(), "outputFingerprint": frozen_fingerprint,
+            }],
+        })
+        return payload
+
+    client.input = mismatch_input  # type: ignore[method-assign]
+    outcome = runner_for(client).run_once()
+
+    assert outcome.status == "succeeded"
+    candidate = client.trace_candidates[0]
+    assert candidate["requestedDecision"] == "insufficient"
+    assert candidate["rawEvidence"]["imageCarrier"]["raw"]["recovery"] == "visual-raster"
+    assert candidate["rawEvidence"]["attributionGate"]["perceptualFingerprintSupported"] is False
 
 
 def test_trace_job_records_native_document_structure_as_insufficient_only() -> None:

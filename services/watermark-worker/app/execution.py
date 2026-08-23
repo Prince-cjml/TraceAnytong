@@ -29,7 +29,8 @@ from .errors import (
     WorkerError,
 )
 from .formats.registry import AdapterRegistry
-from .models import Artifact, CarrierEvidence, CarrierProfile, PersonalizationResult, TraceIdentity
+from .fingerprint.perceptual import PerceptualFingerprinter
+from .models import Artifact, CarrierEvidence, CarrierProfile, FingerprintEvidence, PersonalizationResult, TraceIdentity
 
 
 class WorkerClient(Protocol):
@@ -128,6 +129,12 @@ class RunOutcome:
 
 class JobRunner:
     """Processes one claimed job, with lease checks before every remote boundary."""
+
+    # A perceptual fingerprint is supporting evidence rather than an identity
+    # by itself. Visual image-code recovery must clear this score before it
+    # may ask the control plane (which independently applies profile policy)
+    # for attribution.
+    _MIN_IMAGE_PERCEPTUAL_SCORE = 0.90
 
     def __init__(self, settings: WorkerSettings, client: WorkerClient, registry: AdapterRegistry | None = None, env: Mapping[str, str] | None = None) -> None:
         self.settings = settings
@@ -507,19 +514,60 @@ class JobRunner:
                 candidate = matches[0]
                 if not isinstance(candidate.get("issuanceId"), str):
                     raise InputIntegrityError("image trace candidate is missing issuance provenance")
-                fingerprint_score = 1.0 if candidate.get("outputSha256") == actual_sha else 0.0
-                exact_output = fingerprint_score == 1.0
+                candidate_fingerprint = candidate.get("outputFingerprint")
+                exact_output = candidate.get("outputSha256") == actual_sha
+                if isinstance(candidate_fingerprint, dict):
+                    fingerprint_evidence = PerceptualFingerprinter().search(
+                        Artifact(evidence_bytes, mime), [candidate_fingerprint],
+                    )[0]
+                else:
+                    # Legacy snapshots predate a frozen perceptual index. They
+                    # retain the existing exact-byte decision only; they may
+                    # not use a weaker transformation match.
+                    fingerprint_evidence = FingerprintEvidence(
+                        "sha256-v1", 1.0 if exact_output else 0.0,
+                        {
+                            "method": "legacy-output-sha256",
+                            "observedSha256": actual_sha,
+                            "candidateOutputSha256": candidate.get("outputSha256"),
+                        },
+                    )
+                fingerprint_score = fingerprint_evidence.score
+                visual_recovery = evidence.raw.get("recovery") == "visual-raster"
+                perceptual_support = (
+                    isinstance(candidate_fingerprint, dict)
+                    and fingerprint_score >= self._MIN_IMAGE_PERCEPTUAL_SCORE
+                )
+                fusion_attribution = visual_recovery and perceptual_support
+                attribution_ready = exact_output or fusion_attribution
+                final_confidence = 1.0 if exact_output else min(evidence.score, fingerprint_score)
+                if exact_output:
+                    explanation = "Unique server-mapped image code and exact frozen derived SHA-256 recovered from supplied evidence."
+                elif fusion_attribution:
+                    explanation = "Visually recovered server-mapped image code is supported by the frozen perceptual fingerprint."
+                elif visual_recovery:
+                    explanation = "Visual image code was recovered, but the frozen perceptual fingerprint is below the conservative attribution threshold."
+                else:
+                    explanation = "Image code was not visually recovered and supplied bytes do not exactly match the frozen derived artifact."
                 self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
                     "caseId": case_id, "traceHandle": candidate["traceHandle"], "issuanceId": candidate["issuanceId"],
                     "watermarkScore": evidence.score, "watermarkMargin": 1.0, "fingerprintScore": fingerprint_score,
                     "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
-                    "finalConfidence": 1.0 if exact_output else 0.0,
-                    "requestedDecision": "attributed" if exact_output else "insufficient",
-                    "explanation": "Unique server-mapped image code and exact derived fingerprint recovered from supplied evidence." if exact_output else "Image code recovered, but the deterministic fallback requires an exact derived fingerprint before attribution.",
-                    "rawEvidence": {"imageCarrier": asdict(evidence), "candidateCount": len(candidates), "evidenceSha256": actual_sha},
+                    "finalConfidence": final_confidence if attribution_ready else 0.0,
+                    "requestedDecision": "attributed" if attribution_ready else "insufficient",
+                    "explanation": explanation,
+                    "rawEvidence": {
+                        "imageCarrier": asdict(evidence), "fingerprint": asdict(fingerprint_evidence),
+                        "candidateCount": len(candidates), "evidenceSha256": actual_sha,
+                        "attributionGate": {
+                            "exactOutputSha256": exact_output, "visualRasterRecovery": visual_recovery,
+                            "minimumPerceptualScore": self._MIN_IMAGE_PERCEPTUAL_SCORE,
+                            "perceptualFingerprintSupported": perceptual_support,
+                        },
+                    },
                     "rank": 1, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
                     "carrierVersion": ImageCodeCarrier.carrier_version, "detectorVersion": evidence.detector_version,
-                    "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
+                    "fingerprintVersion": fingerprint_evidence.fingerprint_version, "keyVersion": profile.key_version,
                     "modelVersion": "deterministic-fallback-v2", "workerVersion": self.settings.worker_version,
                 })
         else:

@@ -11,6 +11,7 @@ import {
   assertCandidateInTraceSnapshot,
   assertTraceCandidateSnapshot,
   MAX_TRACE_CANDIDATES,
+  projectIssuanceFingerprint,
   type TraceCandidateSnapshotBinding,
 } from "./traceCandidateSnapshotRules";
 import { assertCandidateRank, assertCandidateRankForCarrier } from "./traceRankRules";
@@ -82,6 +83,9 @@ async function createTraceCandidateSnapshot(
   const snapshot = issuances.flatMap((issuance: any, index: number) => {
     const candidateJob = candidateJobs[index];
     const outputSha256 = candidateJob?.state === "succeeded" ? candidateJob.result?.outputSha256 : undefined;
+    const outputFingerprint = candidateJob?.state === "succeeded"
+      ? projectIssuanceFingerprint(candidateJob.result?.fingerprint)
+      : undefined;
     if (!issuance.derivedStorageId || !isSha256(outputSha256)) return [];
     return [{
       traceHandle: issuance.traceHandle,
@@ -90,6 +94,7 @@ async function createTraceCandidateSnapshot(
       issuanceId: String(issuance._id),
       ...(issuance.wmCode === undefined ? {} : { wmCode: issuance.wmCode }),
       outputSha256,
+      ...(outputFingerprint === undefined || outputFingerprint.sha256 !== outputSha256 ? {} : { outputFingerprint }),
     }];
   });
   if (profile.carrier !== "screen") {

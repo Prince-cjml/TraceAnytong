@@ -70,6 +70,13 @@ export default defineSchema({
       traceHandle: v.string(), scope: v.union(v.literal("issuance"), v.literal("web_session")), createdAt: v.number(),
       issuanceId: v.optional(v.id("issuances")), webSessionId: v.optional(v.id("webSessions")),
       wmCode: v.optional(v.number()), outputSha256: v.optional(v.string()),
+      // A deliberately small, anonymous projection of a succeeded derived
+      // artifact fingerprint. It is frozen with the trace job and is never
+      // re-resolved from a mutable issuance job by the worker.
+      outputFingerprint: v.optional(v.object({
+        fingerprintVersion: v.literal("perceptual-v1"), sha256: v.string(), mimeType: v.string(),
+        dHash: v.optional(v.string()), width: v.optional(v.number()), height: v.optional(v.number()),
+      })),
     }))),
     leaseOwner: v.optional(v.string()), leaseExpiresAt: v.optional(v.number()), nextAttemptAt: v.number(), attempts: v.number(),
     lastError: v.optional(v.string()), result: v.optional(v.any()), createdAt: v.number(), updatedAt: v.number(),

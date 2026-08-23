@@ -4,6 +4,8 @@ import {
   assertCandidateInTraceSnapshot,
   assertTraceCandidateSnapshot,
   MAX_TRACE_CANDIDATES,
+  PERCEPTUAL_FINGERPRINT_VERSION,
+  projectIssuanceFingerprint,
   workerCandidatesFromSnapshot,
   type TraceCandidateSnapshotBinding,
 } from "./traceCandidateSnapshotRules.ts";
@@ -15,6 +17,14 @@ const issuanceBinding: TraceCandidateSnapshotBinding = {
   issuanceId: "issuances:immutable",
   wmCode: 42,
   outputSha256: "a".repeat(64),
+  outputFingerprint: {
+    fingerprintVersion: PERCEPTUAL_FINGERPRINT_VERSION,
+    sha256: "a".repeat(64),
+    mimeType: "image/png",
+    dHash: "0123456789abcdef",
+    width: 640,
+    height: 480,
+  },
 };
 
 const sessionBinding: TraceCandidateSnapshotBinding = {
@@ -37,13 +47,35 @@ test("trace candidate snapshots are bounded anonymous bindings with no PII field
   );
   for (const candidate of workerCandidatesFromSnapshot(snapshot)) {
     assert.deepEqual(Object.keys(candidate).sort(), candidate.scope === "issuance"
-      ? ["createdAt", "issuanceId", "outputSha256", "scope", "traceHandle", "wmCode"]
+      ? ["createdAt", "issuanceId", "outputFingerprint", "outputSha256", "scope", "traceHandle", "wmCode"]
       : ["createdAt", "scope", "traceHandle", "webSessionId"]);
     assert.equal("email" in candidate, false);
     assert.equal("recipient" in candidate, false);
     assert.equal("url" in candidate, false);
     assert.equal("secret" in candidate, false);
   }
+});
+
+test("fingerprint snapshots project only validated anonymous fields", () => {
+  const fingerprint = projectIssuanceFingerprint({
+    fingerprintVersion: PERCEPTUAL_FINGERPRINT_VERSION,
+    sha256: "a".repeat(64), mimeType: "image/png", dHash: "0123456789abcdef",
+    width: 640, height: 480, bytes: 1234, warnings: ["not copied"],
+  });
+  assert.deepEqual(fingerprint, issuanceBinding.outputFingerprint);
+  assert.equal(projectIssuanceFingerprint({ ...fingerprint, sha256: "not-a-hash" }), undefined);
+  assert.equal(projectIssuanceFingerprint({ ...fingerprint, dHash: "not-a-dhash" }), undefined);
+  assert.throws(
+    () => assertTraceCandidateSnapshot([{
+      ...issuanceBinding,
+      outputFingerprint: { ...issuanceBinding.outputFingerprint!, email: "not-permitted@example.test" },
+    } as any]),
+    /INVALID_TRACE_CANDIDATE_SNAPSHOT/,
+  );
+  assert.throws(
+    () => assertTraceCandidateSnapshot([{ ...issuanceBinding, outputFingerprint: null } as any]),
+    /INVALID_TRACE_CANDIDATE_SNAPSHOT/,
+  );
 });
 
 test("worker input is reused from the stored snapshot rather than mutable live provenance", () => {
@@ -53,6 +85,7 @@ test("worker input is reused from the stored snapshot rather than mutable live p
     traceHandle: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     wmCode: 99,
     outputSha256: "b".repeat(64),
+    outputFingerprint: { ...issuanceBinding.outputFingerprint!, sha256: "b".repeat(64) },
   };
   const workerCandidates = workerCandidatesFromSnapshot(snapshot);
   assert.deepEqual(workerCandidates, snapshot);
