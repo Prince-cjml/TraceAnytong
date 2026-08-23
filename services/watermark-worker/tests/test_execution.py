@@ -45,9 +45,9 @@ def structured_docx(trace_handle: str, profile_version: str) -> bytes:
     return personalized.artifact.data
 
 
-def screen_capture(trace_handle: str, profile_version: str) -> bytes:
+def screen_capture(trace_handle: str, profile_version: str, scope: str = "web_session") -> bytes:
     profile = CarrierProfile("screen-v1", profile_version, "key-1", b"deterministic-screen-key", tile_size=64)
-    identity = TraceIdentity(trace_handle, "web_session", profile_version, 1_725_000_000)
+    identity = TraceIdentity(trace_handle, scope, profile_version, 1_725_000_000)
     tile = ScreenTileCarrier().tile_rgba(identity, profile)
     capture = Image.new("RGBA", (256, 256), (235, 240, 250, 255))
     for y in range(0, 256, 64):
@@ -115,6 +115,7 @@ class FakeClient:
             "createdAt": 1_725_000_000,
             "wmCode": 42,
             "profileId": "image-v1",
+            "profileCarrier": "image",
         }
 
     def download_input(self, input_url: str) -> bytes:
@@ -235,6 +236,36 @@ def test_integral_convex_json_wm_code_is_normalized_before_personalization() -> 
     assert client.completed["result"]["carrierEvidence"]["raw"]["wmCode"] == 42
 
 
+@pytest.mark.parametrize(("mime", "expected_carrier"), [
+    ("image/jpeg", "image"),
+    ("image/png", "image"),
+    ("image/webp", "image"),
+    ("application/pdf", "screen"),
+    ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "screen"),
+    ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "screen"),
+])
+def test_personalization_carrier_mapping_matches_implemented_adapters(mime: str, expected_carrier: str) -> None:
+    assert JobRunner._personalization_carrier_for_mime(mime) == expected_carrier
+
+
+def test_personalization_rejects_profile_carrier_incompatible_with_source_mime() -> None:
+    client = FakeClient(png_bytes())
+    original_input = client.input
+
+    def mismatched_carrier_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload["profileCarrier"] = "screen"
+        return payload
+
+    client.input = mismatched_carrier_input  # type: ignore[method-assign]
+    outcome = runner_for(client).run_once()
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "INPUT_INTEGRITY_ERROR"
+    assert client.failed == ("INPUT_INTEGRITY_ERROR", False)
+    assert "download" not in client.calls
+
+
 def test_web_tile_job_uploads_a_png_without_downloading_document_bytes() -> None:
     env = environment()
     env.update({
@@ -248,7 +279,7 @@ def test_web_tile_job_uploads_a_png_without_downloading_document_bytes() -> None
 
     def tile_input(worker_id: str, job_id: str) -> dict:
         payload = original_input(worker_id, job_id)
-        payload.update({"scope": "web_session", "profileId": "screen-v1", "profileVersion": "profile-2026-08", "wmCode": None})
+        payload.update({"scope": "web_session", "profileId": "screen-v1", "profileCarrier": "screen", "profileVersion": "profile-2026-08", "wmCode": None})
         return payload
 
     client.input = tile_input  # type: ignore[method-assign]
@@ -370,6 +401,68 @@ def test_trace_job_ranks_candidate_matched_screen_capture() -> None:
     assert client.trace_candidates[0]["watermarkScore"] >= 0.2
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
     assert "candidateScores" in client.trace_candidates[0]["rawEvidence"]
+
+
+def test_trace_job_records_issuance_scoped_screen_candidate() -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    source = screen_capture(trace_handle, "profile-2026-08", "issuance")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-screen-issuance", "trace-screen-issuance-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:screen-issuance")
+    original_input = client.input
+
+    def screen_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:screen-issuance", "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [{"issuanceId": "issuances:screen", "traceHandle": trace_handle, "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": hashlib.sha256(source).hexdigest()}],
+        })
+        return payload
+
+    client.input = screen_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["issuanceId"] == "issuances:screen"
+    assert "webSessionId" not in client.trace_candidates[0]
+    assert client.trace_candidates[0]["rawEvidence"]["candidateScores"][0]["scope"] == "issuance"
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+
+
+def test_trace_job_with_empty_screen_snapshot_completes_without_candidates() -> None:
+    """An empty immutable snapshot is a no-match result, never a retry loop."""
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(png_bytes())
+    client.job = ClaimedJob("jobs:trace-screen-empty", "trace-screen-empty-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:screen-empty")
+    original_input = client.input
+
+    def screen_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:screen-empty", "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [],
+        })
+        return payload
+
+    client.input = screen_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates == []
+    assert client.completed_cases == ["cases:screen-empty"]
+    assert client.completed is not None
+    assert client.completed["result"]["candidateCount"] == 0
+    assert client.completed["result"]["detectorVersion"] == ScreenTileCarrier.detector_version
 
 
 def test_trace_job_retains_the_top_two_ranked_screen_candidates_with_raw_evidence() -> None:

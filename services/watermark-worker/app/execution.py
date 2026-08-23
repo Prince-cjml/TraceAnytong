@@ -160,6 +160,28 @@ class JobRunner:
         return f"{job.job_id}{extensions.get(mime, '')}"
 
     @staticmethod
+    def _personalization_carrier_for_mime(mime: str) -> str | None:
+        """Return the carrier implemented by the immutable-output adapter."""
+        if mime in {"image/jpeg", "image/png", "image/webp"}:
+            return "image"
+        if mime in {
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        }:
+            return "screen"
+        return None
+
+    @classmethod
+    def _assert_personalization_carrier(cls, payload: dict, mime: str) -> None:
+        expected = cls._personalization_carrier_for_mime(mime)
+        if payload.get("profileCarrier") != expected:
+            raise InputIntegrityError(
+                "leased profile carrier does not support the source MIME",
+                details={"mime": mime, "expectedCarrier": expected},
+            )
+
+    @staticmethod
     def _wm_code(payload: dict, mime: str) -> int | None:
         """Normalize Convex JSON numbers without weakening issuance validation.
 
@@ -178,6 +200,16 @@ class JobRunner:
         if isinstance(value, float) and value.is_integer():
             return int(value)
         raise InputIntegrityError("image issuance is missing its server-mapped wmCode")
+
+    @staticmethod
+    def _screen_candidate_provenance(candidate: dict) -> dict[str, str]:
+        """Keep screen trace bindings exact for either supported trace scope."""
+        scope = candidate.get("scope")
+        if scope == "issuance" and isinstance(candidate.get("issuanceId"), str):
+            return {"issuanceId": candidate["issuanceId"]}
+        if scope == "web_session" and isinstance(candidate.get("webSessionId"), str):
+            return {"webSessionId": candidate["webSessionId"]}
+        raise InputIntegrityError("screen trace candidate is missing scope-matched provenance")
 
     def _result(self, personalized: PersonalizationResult, profile: CarrierProfile, artifact: Artifact) -> dict:
         # Deliberately select safe, explainable fields. CarrierProfile.secret is never serialized.
@@ -213,6 +245,8 @@ class JobRunner:
         }
 
     def _complete_web_tile(self, job: ClaimedJob, payload: dict, profile: CarrierProfile) -> RunOutcome:
+        if payload.get("profileCarrier") != "screen":
+            raise InputIntegrityError("web tile job must use a screen profile")
         identity = self._identity(payload)
         if identity.scope != "web_session":
             raise InputIntegrityError("web tile job must carry a web-session trace identity")
@@ -242,7 +276,12 @@ class JobRunner:
         if not isinstance(candidates, list):
             raise InputIntegrityError("trace job candidates are invalid")
         carrier_kind = payload.get("profileCarrier")
+        matches: list[dict] = []
         if carrier_kind == "screen":
+            # A new or expired screen profile can legitimately have an empty
+            # immutable candidate snapshot.  That is an explainable completed
+            # trace with no candidates, not an infrastructure failure.
+            detector_version = ScreenTileCarrier.detector_version
             try:
                 screenshot = Image.open(io.BytesIO(evidence_bytes)).convert("RGB")
             except OSError as exc:
@@ -257,8 +296,7 @@ class JobRunner:
                     identity.validate()
                 except (KeyError, TypeError, ValueError) as exc:
                     raise InputIntegrityError("screen trace candidate identity is invalid") from exc
-                if identity.scope != "web_session" or not isinstance(candidate.get("webSessionId"), str):
-                    raise InputIntegrityError("screen trace candidate is missing web-session provenance")
+                self._screen_candidate_provenance(candidate)
                 scored.append((candidate, ScreenTileCarrier().detect_candidate(screenshot, identity, profile)))
             # A trace case retains the strongest two candidate bindings.  Keep
             # ties deterministic even if the control-plane candidate order
@@ -268,7 +306,8 @@ class JobRunner:
                 {
                     "rank": rank,
                     "traceHandle": candidate["traceHandle"],
-                    "webSessionId": candidate["webSessionId"],
+                    "scope": candidate["scope"],
+                    **self._screen_candidate_provenance(candidate),
                     "score": evidence.score,
                     "raw": evidence.raw,
                     "warnings": list(evidence.warnings),
@@ -300,8 +339,9 @@ class JobRunner:
                 # consumers while giving every retained rank its own evidence.
                 if is_top_candidate:
                     raw_evidence["topScreenCorrelation"] = asdict(evidence)
+                provenance = self._screen_candidate_provenance(candidate)
                 self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
-                    "caseId": case_id, "traceHandle": candidate["traceHandle"], "webSessionId": candidate["webSessionId"],
+                    "caseId": case_id, "traceHandle": candidate["traceHandle"], **provenance,
                     "watermarkScore": evidence.score, "watermarkMargin": top_candidate_margin if is_top_candidate else 0.0, "fingerprintScore": 0.0,
                     "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
                     "finalConfidence": evidence.score if is_clear else 0.0,
@@ -315,6 +355,7 @@ class JobRunner:
                 })
         elif mime.startswith("image/"):
             evidence = ImageCodeCarrier().detect(Artifact(evidence_bytes, mime), profile)
+            detector_version = evidence.detector_version
             observed_code = evidence.raw.get("wmCode")
             matches = [candidate for candidate in candidates if candidate.get("wmCode") == observed_code]
             if isinstance(observed_code, int) and len(matches) == 1:
@@ -351,6 +392,7 @@ class JobRunner:
                 identities.append(identity)
                 candidate_by_identity[(identity.trace_handle, identity.scope)] = candidate
             evidence = NativeStructureCarrier().detect(Artifact(evidence_bytes, mime), profile, candidates=identities)
+            detector_version = evidence.detector_version
             structure_matches = [match for match in evidence.raw["candidateMatches"] if match["profileVersionMatches"]]
             for rank, match in enumerate(structure_matches, start=1):
                 candidate = candidate_by_identity[(match["traceHandle"], match["scope"])]
@@ -372,7 +414,7 @@ class JobRunner:
         self.client.complete_trace_case(self.settings.worker_id, job.job_id, case_id)
         self.client.complete(self.settings.worker_id, job.job_id, None, None, {
             "workerVersion": self.settings.worker_version, "candidateCount": len(matches), "evidenceSha256": actual_sha,
-            "detectorVersion": evidence.detector_version,
+            "detectorVersion": detector_version,
         })
         return RunOutcome("succeeded", job.job_id)
 
@@ -422,6 +464,7 @@ class JobRunner:
             mime = payload.get("mime")
             if not isinstance(input_url, str) or not isinstance(mime, str):
                 raise InputIntegrityError("leased job input is incomplete")
+            self._assert_personalization_carrier(payload, mime)
             self.client.heartbeat(self.settings.worker_id, job.job_id)
             source_bytes = self.client.download_input(input_url)
             expected_sha = payload.get("inputSha256")
