@@ -16,6 +16,7 @@ from app.carriers.screen_tile import ScreenTileCarrier
 from app.carriers.structure import NativeStructureCarrier
 from app.fingerprint.perceptual import PerceptualFingerprinter
 from app.formats.registry import AdapterRegistry
+from app.formats.office_renderer import OfficeRenderResult, OfficeRenderer
 from app.models import Artifact, CarrierEvidence, CarrierProfile, TraceIdentity
 
 
@@ -330,6 +331,7 @@ def test_web_tile_job_uploads_a_png_without_downloading_document_bytes() -> None
         "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
         "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
         "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+        "WORKER_OFFICE_RENDERER_PATH": "traceanytong-test-no-office-renderer",
     })
     client = FakeClient(png_bytes())
     client.job = ClaimedJob("jobs:tile", "tile-key", "web_tile", None, "screen-v1", 9_999_999)
@@ -635,6 +637,7 @@ def test_trace_job_uses_structure_only_for_native_office_screen_evidence(mime: s
         "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
         "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
         "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+        "WORKER_OFFICE_RENDERER_PATH": "traceanytong-test-no-office-renderer",
     })
     client = FakeClient(source)
     client.job = ClaimedJob("jobs:trace-native-screen", "trace-native-screen-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:native-screen")
@@ -656,8 +659,59 @@ def test_trace_job_uses_structure_only_for_native_office_screen_evidence(mime: s
     assert client.trace_candidates[0]["rank"] == 1
     assert client.trace_candidates[0]["watermarkScore"] == 0.0
     assert client.trace_candidates[0]["rawEvidence"]["nativeStructure"]["raw"]["candidateMatches"][0]["traceHandle"] == trace_handle
-    assert client.trace_candidates[0]["rawEvidence"]["screenVisualCorrelation"] == {"attempted": False, "reason": "office_rendering_unavailable"}
+    rendering = client.trace_candidates[0]["rawEvidence"]["screenVisualCorrelation"]
+    assert rendering["attempted"] is False
+    assert rendering["available"] is False
+    assert rendering["status"] == "unavailable"
+    assert rendering["selection"] == "configured"
+    assert rendering["externalVersion"] is None
     assert "screenCorrelation" not in client.trace_candidates[0]["rawEvidence"]
+
+
+@pytest.mark.parametrize("mime", [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+])
+def test_trace_job_uses_optional_office_rendered_pages_for_screen_correlation(monkeypatch, mime: str) -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    source = screen_native_document(mime, trace_handle, "profile-2026-08")
+    rendered_pdf = screen_pdf(trace_handle, "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-office-screen", "trace-office-screen-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:office-screen")
+    original_input = client.input
+
+    def office_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:office-screen", "mime": mime, "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [{"issuanceId": "issuances:office", "traceHandle": trace_handle, "scope": "issuance", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": hashlib.sha256(source).hexdigest()}],
+        })
+        return payload
+
+    def fake_render(self, artifact: Artifact) -> OfficeRenderResult:
+        assert artifact.data == source
+        return OfficeRenderResult(
+            Artifact(rendered_pdf, "application/pdf", "fake-rendered.pdf"),
+            {"rendererVersion": "libreoffice-pdf-bridge-v1", "available": True, "attempted": True, "status": "rendered", "selection": "configured", "externalVersion": "LibreOffice 24.2.5"},
+        )
+
+    monkeypatch.setattr(OfficeRenderer, "render", fake_render)
+    client.input = office_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert client.trace_candidates[0]["rawEvidence"]["screenCorrelation"]["detector_version"] == ScreenTileCarrier.detector_version
+    assert client.trace_candidates[0]["rawEvidence"]["nativeStructure"]["raw"]["candidateMatches"][0]["traceHandle"] == trace_handle
+    renderer = client.trace_candidates[0]["rawEvidence"]["officeRenderer"]
+    assert renderer["status"] == "rendered"
+    assert renderer["externalVersion"] == "LibreOffice 24.2.5"
+    assert renderer["outputPages"] >= 1
 
 
 @pytest.mark.parametrize("mime", [
@@ -671,6 +725,7 @@ def test_trace_job_with_unmatched_native_office_evidence_completes_without_candi
         "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
         "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
         "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+        "WORKER_OFFICE_RENDERER_PATH": "traceanytong-test-no-office-renderer",
     })
     client = FakeClient(source)
     client.job = ClaimedJob("jobs:trace-native-empty", "trace-native-empty-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:native-empty")
