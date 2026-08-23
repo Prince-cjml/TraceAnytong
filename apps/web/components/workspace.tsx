@@ -25,6 +25,17 @@ type EvidenceTraceCandidate = TraceCandidate & Pick<LiveTraceCandidate, "evidenc
 type LiveTraceCase = { state: "queued" | "processing" | "complete" | "failed"; candidates: EvidenceTraceCandidate[] };
 type TraceSource = "live" | "demo";
 type LiveWorkspaceIdentity = { organizationName: string; memberDisplayName: string; openTraceCases?: string };
+type TraceConsoleState = "upload" | "processing" | "result" | "insufficient" | "failed";
+
+/**
+ * A terminal worker failure is not detector evidence. Keep it separate from an
+ * insufficient decision so live mode never fabricates a completed result.
+ */
+export function liveTraceConsoleState(trace: Pick<LiveTraceCase, "state" | "candidates">): TraceConsoleState {
+  if (trace.state === "queued" || trace.state === "processing") return "processing";
+  if (trace.state === "failed") return "failed";
+  return trace.candidates[0]?.decision === "HIGH" ? "result" : "insufficient";
+}
 
 export function canManageTraceCases(role?: string): boolean {
   return role === "investigator" || role === "admin";
@@ -110,7 +121,7 @@ function LiveWorkspace({ initialView, traceCaseId, role }: { initialView: View; 
 function WorkspaceShell({ initialView, documentState, liveMode = false, liveRole, liveIdentity, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase, liveDocumentIntake, liveOnboarding, signInAvailable = false, signOutAvailable = false }: { initialView: View; documentState: DataState<readonly WorkspaceDocument[]>; liveMode?: boolean; liveRole?: string; liveIdentity?: LiveWorkspaceIdentity; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void; liveDocumentIntake?: ReactNode; liveOnboarding?: ReactNode; signInAvailable?: boolean; signOutAvailable?: boolean }) {
   const [view, setView] = useState<View>(initialView);
   const [issueOpen, setIssueOpen] = useState(false);
-  const [traceState, setTraceState] = useState<"upload" | "processing" | "result" | "insufficient">("upload");
+  const [traceState, setTraceState] = useState<TraceConsoleState>("upload");
   const [selected, setSelected] = useState<TraceCandidate>(traceCandidates[0]);
   const title = nav.find((item) => item.id === view)?.label ?? "Overview";
   const organizationName = liveMode ? liveIdentity?.organizationName ?? "Loading workspace…" : "Northstar Bio";
@@ -138,13 +149,17 @@ function DocumentTableMessage({ message }: { message: string }) { return <div cl
 
 function IssueDialog({ close }: { close: () => void }) { const [phase, setPhase] = useState<"ready" | "processing" | "complete">("ready"); return <div className="modal-backdrop" role="presentation"><Card className="modal" role="dialog" aria-modal="true" aria-label="Issue protected copy"><button className="modal-close" onClick={close}>×</button><Badge tone="info">NEW ISSUANCE</Badge><h2>Issue protected copy</h2><p className="muted">Creates an anonymous trace identity and a separate, immutable derivative.</p><label>Recipient reference<input defaultValue="Finance team · recipient 08" /></label><label>Watermark profile<select defaultValue="document-screen"><option value="document-screen">document-screen / 2.1</option><option value="document-camera">document-camera / 1.3</option></select></label><label>Expiry <input type="date" defaultValue="2026-09-21" /></label>{phase === "processing" && <div className="issuance-progress"><i /><span>Embedding carrier and preserving derivative…</span></div>}{phase === "complete" && <div className="issuance-done">✓ Protected copy is ready. Trace handle is stored server-side only.</div>}<div className="modal-actions"><button className="secondary" onClick={close}>Cancel</button><button className="primary" onClick={() => phase === "ready" ? setPhase("processing") : phase === "processing" ? setPhase("complete") : close()}>{phase === "ready" ? "Generate copy" : phase === "processing" ? "Mark ready" : "Done"}</button></div></Card></div>; }
 
-function TraceConsole({ state, setState, selected, setSelected, liveMode, liveRole, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase }: { state: "upload" | "processing" | "result" | "insufficient"; setState: (state: "upload" | "processing" | "result" | "insufficient") => void; selected: TraceCandidate; setSelected: (candidate: TraceCandidate) => void; liveMode: boolean; liveRole?: string; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void }) {
+function TraceConsole({ state, setState, selected, setSelected, liveMode, liveRole, liveTrace, liveUploader, liveTraceQueue, onClearLiveCase }: { state: TraceConsoleState; setState: (state: TraceConsoleState) => void; selected: TraceCandidate; setSelected: (candidate: TraceCandidate) => void; liveMode: boolean; liveRole?: string; liveTrace?: LiveTraceCase; liveUploader?: ReactNode; liveTraceQueue?: ReactNode; onClearLiveCase?: () => void }) {
   useEffect(() => {
     if (!liveTrace) return;
-    if (liveTrace.state === "queued" || liveTrace.state === "processing") return setState("processing");
+    const liveState = liveTraceConsoleState(liveTrace);
+    if (liveState === "processing" || liveState === "failed") {
+      setState(liveState);
+      return;
+    }
     const candidate = liveTrace.candidates[0] ?? { ...insufficientCandidate, traceHandle: "—", issuance: "No candidate binding", issuedAt: "Control-plane result", watermarkScore: null, watermarkMargin: null, fingerprintScore: null, geometricScore: null, structureScore: null, timelineScore: null, warning: "The detector returned no candidate binding. No attribution has been recorded." };
     setSelected(candidate);
-    setState(candidate.decision === "HIGH" ? "result" : "insufficient");
+    setState(liveState);
   }, [liveTrace, setSelected, setState]);
   const complete = state === "result" || state === "insufficient";
   const candidates = liveTrace?.candidates ?? (state === "insufficient" ? [insufficientCandidate] : traceCandidates);
@@ -157,12 +172,14 @@ function TraceConsole({ state, setState, selected, setSelected, liveMode, liveRo
       ? <><div>{liveUploader}</div>{liveTraceQueue && <div style={{ marginTop: 20 }}>{liveTraceQueue}</div>}</>
       : <TraceAccessNotice role={liveRole} />
     : <UploadPanel onRun={(insufficient) => { setSelected(insufficient ? insufficientCandidate : traceCandidates[0]); setState("processing"); }} />;
-  return <div className="page trace-page"><div className="trace-steps">{["Upload evidence", "Analyze evidence", "Review result"].map((step, i) => <div key={step} className={(i === 0 || (i === 1 && state !== "upload") || (i === 2 && complete)) ? "step current" : "step"}><b>{i + 1}</b><span>{step}</span></div>)}</div>{state === "upload" && upload}{state === "processing" && (liveMode ? <LiveProcessingNotice /> : <ProcessingPanel onComplete={(insufficient) => setState(insufficient ? "insufficient" : "result")} />)}{complete && <TraceResult candidate={selected} candidates={candidates} select={setSelected} reset={reset} source={liveTrace ? "live" : "demo"} />}</div>;
+  return <div className="page trace-page"><div className="trace-steps">{["Upload evidence", "Analyze evidence", "Review result"].map((step, i) => <div key={step} className={(i === 0 || (i === 1 && state !== "upload") || (i === 2 && complete)) ? "step current" : "step"}><b>{i + 1}</b><span>{step}</span></div>)}</div>{state === "upload" && upload}{state === "processing" && (liveMode ? <LiveProcessingNotice /> : <ProcessingPanel onComplete={(insufficient) => setState(insufficient ? "insufficient" : "result")} />)}{state === "failed" && liveMode && <LiveTraceFailureNotice onReset={reset} />}{complete && <TraceResult candidate={selected} candidates={candidates} select={setSelected} reset={reset} source={liveTrace ? "live" : "demo"} />}</div>;
 }
 
 function TraceAccessNotice({ role }: { role?: string }) { return <Card className="live-document-note"><Badge tone="info">TRACE ACCESS BOUNDARY</Badge><h2>{role ? "Trace intake is not available for this role." : "Checking trace access…"}</h2><p>{role ? "Only investigators and administrators can preserve evidence, inspect case status, or view trace results. This workspace does not show a demo trace flow while authenticated." : "The workspace waits for the control plane to confirm your role before exposing any trace action."}</p></Card>; }
 
 function LiveProcessingNotice() { return <Card className="live-document-note"><Badge tone="info">AUTHORIZED CASE PROCESSING</Badge><h2>Analysis is in progress.</h2><p>The original evidence is immutable. This page updates when the control plane publishes a completed or insufficient result; it does not simulate detector progress.</p></Card>; }
+
+function LiveTraceFailureNotice({ onReset }: { onReset: () => void }) { return <Card className="live-document-note live-trace-failure" role="alert"><Badge tone="danger">TRACE CASE NEEDS ATTENTION</Badge><h2>Analysis did not complete.</h2><p>No detector decision or attribution is available for this case. The original evidence remains preserved; select another case or submit new evidence when it is ready for analysis.</p><button className="secondary" onClick={onReset}>Choose another case</button></Card>; }
 
 function UploadPanel({ onRun }: { onRun: (insufficient: boolean) => void }) { const [file, setFile] = useState<string | null>(null); return <div className="trace-upload"><Card className="dropzone"><div className="upload-glyph">↑</div><h2>{file ? file : "Drop leak evidence here"}</h2><p>{file ? "Evidence will be hashed and preserved before any analysis." : "Screenshots, photos, PDFs, Office documents and images are supported."}</p><div><label className="file-button">Choose file<input type="file" onChange={(event) => setFile(event.target.files?.[0]?.name ?? "leak-screenshot.png")} /></label><span>or drag and drop</span></div>{file && <div className="file-preview"><span>PNG</span><b>{file}</b><small>2.4 MB · SHA-256 pending</small><button onClick={() => setFile(null)}>×</button></div>}</Card><div className="trace-side-note"><Badge tone="info">EVIDENCE INTEGRITY</Badge><h3>Preserve first. Process second.</h3><p>The original upload is immutable. Trace results separate watermark, content, geometry, structure, and timeline signals.</p><button className="primary" disabled={!file} onClick={() => onRun(false)}>Preserve and analyze <span>→</span></button><button className="text-button demo-alt" onClick={() => onRun(true)}>Preview insufficient-evidence state</button></div></div>; }
 

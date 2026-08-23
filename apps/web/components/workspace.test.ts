@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canManageTraceCases, traceResultCopy, workspaceInitials, workspaceSessionAction } from "./workspace";
+import { traceCandidates } from "../lib/demo-data";
+import { canManageTraceCases, liveTraceConsoleState, traceResultCopy, workspaceInitials, workspaceSessionAction } from "./workspace";
 
 describe("trace result presentation", () => {
   it("keeps an insufficient decision explicitly non-attributive", () => {
@@ -33,6 +34,19 @@ describe("live trace access", () => {
     expect(canManageTraceCases("issuer")).toBe(false);
     expect(canManageTraceCases("viewer")).toBe(false);
     expect(canManageTraceCases(undefined)).toBe(false);
+  });
+});
+
+describe("live trace terminal states", () => {
+  it("never presents a failed worker case as an insufficient detector result", () => {
+    expect(liveTraceConsoleState({ state: "failed", candidates: [] })).toBe("failed");
+  });
+
+  it("keeps active cases in processing and completed cases decision-bound", () => {
+    expect(liveTraceConsoleState({ state: "queued", candidates: [] })).toBe("processing");
+    expect(liveTraceConsoleState({ state: "processing", candidates: [] })).toBe("processing");
+    expect(liveTraceConsoleState({ state: "complete", candidates: [] })).toBe("insufficient");
+    expect(liveTraceConsoleState({ state: "complete", candidates: [traceCandidates[0]] })).toBe("result");
   });
 });
 
