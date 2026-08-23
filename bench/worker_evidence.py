@@ -15,6 +15,7 @@ report so a result cannot be misrepresented as a different detector run.
 from __future__ import annotations
 
 import io
+import re
 import sys
 from importlib import import_module
 from pathlib import Path
@@ -23,6 +24,8 @@ import zipfile
 
 import numpy as np
 from PIL import Image
+
+from bench.attacks import Attack, apply_attack
 
 
 _IMAGE_MIME = "image/png"
@@ -172,6 +175,23 @@ def _minimal_pdf(*, marker: str | None = None) -> bytes:
     return bytes(out)
 
 
+def _canonical_pdf_for_structure_probe(artifact: Any, Artifact: Any) -> Any:
+    """Remove the random PDF trailer ID before hashing deterministic fixture evidence.
+
+    PyMuPDF assigns a fresh trailer ``/ID`` when the PDF adapter writes a
+    personalized artifact.  It is not carrier evidence, but the structure
+    detector correctly includes the bytes' SHA-256 in its raw output.  The
+    benchmark therefore removes only that documented random field before the
+    local structure probe and records the normalization alongside the result.
+    This helper is fixture-only; it must not be used for uploaded evidence.
+    """
+
+    canonical = re.sub(rb"/ID\s*\[\s*<[^>]+>\s*<[^>]+>\s*\]", b"", artifact.data)
+    if canonical == artifact.data:
+        raise ValueError("expected personalized PDF fixture to contain a trailer ID")
+    return Artifact(canonical, artifact.mime_type, artifact.filename)
+
+
 def _screen_raster(carrier: Any, identities: tuple[Any, ...], profile: Any) -> Image.Image:
     """Build a repeatable low-energy rendered-screen fixture from worker fields."""
 
@@ -180,6 +200,26 @@ def _screen_raster(carrier: Any, identities: tuple[Any, ...], profile: Any) -> I
     for field in fields:
         base += 16 * np.tile(field, (4, 5))[:, :320]
     return Image.fromarray(np.clip(base, 0, 255).astype(np.uint8), "L")
+
+
+def _screen_candidate_scores(first: Any, second: Any, *, transform: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Keep both candidates and transform metadata in every screen probe.
+
+    These labels are fixed benchmark aliases, not trace identities.  The raw
+    detector records let a reader inspect candidate separation without the
+    benchmark claiming that either candidate was server-resolved.
+    """
+
+    raw: dict[str, Any] = {
+        "candidateScores": [
+            {"candidate": "primary", **_evidence(first)},
+            {"candidate": "secondary", **_evidence(second)},
+        ],
+        "crossCandidateMargin": round(float(first.score - second.score), 8),
+    }
+    if transform is not None:
+        raw["transform"] = transform
+    return raw
 
 
 def _versions(api: dict[str, Any]) -> dict[str, str]:
@@ -263,8 +303,49 @@ def collect_worker_evidence(fixtures_root: Path) -> dict[str, Any]:
         evidence=matched,
         status="UNMEASURED",
         reason="Candidate correlation is raw support only until an authorized server resolves a session binding.",
-        extra_raw={"candidateScores": [{"candidate": "primary", **_evidence(matched)}, {"candidate": "secondary", **_evidence(mismatched)}], "crossCandidateMargin": round(float(matched.score - mismatched.score), 8)},
+        extra_raw=_screen_candidate_scores(matched, mismatched),
     ))
+    for attack, status, reason in (
+        (
+            Attack("jpeg", 60),
+            "UNMEASURED",
+            "JPEG recompression retains a measured candidate separation, but a benchmark has no authorized server-side session binding.",
+        ),
+        (
+            Attack("crop", 0.5),
+            "UNMEASURED",
+            "The retained crop has a measured candidate separation, but a benchmark has no authorized server-side session binding.",
+        ),
+        (
+            Attack("resize", 0.75),
+            "INSUFFICIENT",
+            "The current detector has no scale normalization for this resize; the measured scores do not separate the expected candidate and cannot attribute.",
+        ),
+    ):
+        transformed = apply_attack(matched_screen, attack)
+        transformed_primary = screen_carrier.detect_candidate(transformed, primary, profile)
+        transformed_secondary = screen_carrier.detect_candidate(transformed, secondary, profile)
+        results.append(_result(
+            f"screen-candidate-{attack.name}-{attack.value:g}",
+            channel="screen",
+            # This is still an acceptance-corpus input.  Its INSUFFICIENT
+            # outcome is a measured detector limitation, not an ambiguous
+            # source fixture relabeled to make the matrix look healthier.
+            corpus="acceptance",
+            evidence=transformed_primary,
+            status=status,
+            reason=reason,
+            extra_raw=_screen_candidate_scores(
+                transformed_primary,
+                transformed_secondary,
+                transform={
+                    "name": attack.name,
+                    "value": attack.value,
+                    "sourceGeometry": {"width": matched_screen.width, "height": matched_screen.height},
+                    "artifactGeometry": {"width": transformed.width, "height": transformed.height},
+                },
+            ),
+        ))
     ambiguous_screen = _screen_raster(screen_carrier, (primary, secondary), profile)
     first = screen_carrier.detect_candidate(ambiguous_screen, primary, profile)
     second = screen_carrier.detect_candidate(ambiguous_screen, secondary, profile)
@@ -275,7 +356,10 @@ def collect_worker_evidence(fixtures_root: Path) -> dict[str, Any]:
         evidence=first if first.score >= second.score else second,
         status="INSUFFICIENT",
         reason="Two candidate fields are deliberately combined; close cross-candidate correlation must never be attributed.",
-        extra_raw={"candidateScores": [{"candidate": "primary", **_evidence(first)}, {"candidate": "secondary", **_evidence(second)}], "crossCandidateMargin": round(float(abs(first.score - second.score)), 8)},
+        extra_raw={
+            **_screen_candidate_scores(first, second),
+            "crossCandidateMargin": round(float(abs(first.score - second.score)), 8),
+        },
     ))
     blank = Image.new("L", (320, 256), 185)
     blank_evidence = screen_carrier.detect_candidate(blank, primary, profile)
@@ -320,6 +404,25 @@ def collect_worker_evidence(fixtures_root: Path) -> dict[str, Any]:
         ))
 
     marker = f"TraceAnytong:{_PRIMARY_HANDLE};profile:{_BENCHMARK_PROFILE_VERSION}"
+    personalized_pdf = registry.for_mime(_PDF_MIME).personalize(
+        Artifact(_minimal_pdf(), _PDF_MIME, "benchmark.pdf"), primary, profile
+    )
+    canonical_pdf = _canonical_pdf_for_structure_probe(personalized_pdf.artifact, Artifact)
+    personalized_pdf_evidence = structure.detect_candidate(canonical_pdf, primary, profile)
+    results.append(_result(
+        "native-pdf-structure-support",
+        channel="structure",
+        corpus="acceptance",
+        evidence=personalized_pdf_evidence,
+        status="INSUFFICIENT",
+        reason="Native PDF markers and measured placements are provenance support, explicitly not attribution.",
+        extra_raw={
+            "benchmarkNormalization": {
+                "removedPdfTrailerId": True,
+                "reason": "PyMuPDF creates a random trailer ID; it is removed only to make the generated fixture's raw structure hash reproducible.",
+            },
+        },
+    ))
     pdf_evidence = structure.detect_candidate(Artifact(_minimal_pdf(marker=marker), _PDF_MIME, "marker-only.pdf"), primary, profile)
     results.append(_result(
         "native-pdf-marker-only",

@@ -16,6 +16,21 @@ or screen evidence remains `UNMEASURED`, while ambiguous/native-structure-only
 evidence is `INSUFFICIENT`. These entries are regression coverage, not a claim
 of production detector robustness or attribution accuracy.
 
+The worker matrix separately records screen candidate-pair evidence after JPEG
+60, a 50% retained crop, and a 0.75 resize. The first two currently preserve a
+measured separation in the deterministic fixture; the resize probe intentionally
+records `INSUFFICIENT` because this detector has no scale normalization and the
+measured scores do not separate the expected candidate. It also exercises actual
+personalized PDF native-structure extraction alongside DOCX and PPTX. None of
+these measurements is an attribution claim or a physical-capture robustness
+guarantee.
+
+The PDF adapter's underlying library generates a fresh trailer ID on each
+write. For the generated PDF fixture only, the worker matrix removes that
+non-carrier trailer field before collecting structural evidence and records the
+normalization in `rawDetectorEvidence.benchmarkNormalization`; this makes the
+raw source hash reproducible. Uploaded evidence is never normalized this way.
+
 ```text
 python -m bench.fixtures --output bench/fixtures
 python -m bench.runners.run --fixtures bench/fixtures --output bench/reports/latest

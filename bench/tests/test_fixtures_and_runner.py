@@ -32,6 +32,14 @@ def test_runner_emits_complete_deterministic_negative_safe_artifacts(tmp_path) -
     assert first["workerEvidence"]["versions"]["structureDetector"] == "native-structure-detector-v1"
     assert {result["channel"] for result in first["workerEvidence"]["results"]} == {"image", "screen", "structure"}
     assert {result["attribution"]["status"] for result in first["workerEvidence"]["results"]} <= {"UNMEASURED", "INSUFFICIENT"}
+    assert first["workerEvidence"]["confirmedAttributions"] == 0
+    assert first["workerEvidence"]["decisionCounts"]["INSUFFICIENT"] >= 1
+    assert {
+        "screen-candidate-jpeg-60",
+        "screen-candidate-crop-0.5",
+        "screen-candidate-resize-0.75",
+        "native-pdf-structure-support",
+    } <= {result["scenario"] for result in first["workerEvidence"]["results"]}
     for filename in ("report.json", "summary.md", "matrix.csv"):
         assert (first_output / filename).is_file()
     report = json.loads((first_output / "report.json").read_text(encoding="utf-8"))
