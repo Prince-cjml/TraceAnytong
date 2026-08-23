@@ -16,6 +16,8 @@ For every active profile that the worker is allowed to process, configure `WORKE
 
 For personalized files, configure carrier profiles that match the immutable source MIME: `image` profiles are only for JPEG, PNG, and WebP; `screen` profiles are only for PDF, DOCX, and PPTX. `structure` profiles support detector evidence and cannot issue a derivative. Issuance rejects converted output formats—the output remains the source's native MIME.
 
+For direct leak evidence traced with a `screen` profile, PDF pages are rendered deterministically for candidate correlation. DOCX and PPTX are not visually rendered by the worker; they return native-structure provenance support only and always remain insufficient for attribution. Use a screenshot or PDF export when visual screen-pattern correlation is required.
+
 ## Worker operation
 
 The production container starts `traceanytong-worker run`. It performs lease maintenance before each claim, processes successful jobs without an artificial delay, waits after idle or lease-loss outcomes, and applies exponential backoff after failed outcomes. A lease loss is recoverable and is never reported as a new failure by the daemon. After `WORKER_MAX_CONSECUTIVE_FAILURES` failed outcomes (default `5`), the process exits with status `1` so the platform can restart it instead of hot-looping.
