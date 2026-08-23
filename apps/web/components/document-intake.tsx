@@ -70,6 +70,22 @@ export function compatibleProfilesForSourceMime(profiles: readonly ActiveProfile
   return profiles.filter((profile) => isProfileCompatibleWithSourceMime(profile, mime));
 }
 
+/**
+ * A single compatible immutable profile is safe to preselect.  When a source
+ * can be issued with multiple active profiles, the issuer must make that
+ * version choice explicitly instead of inheriting database query order.
+ */
+export function selectCompatibleSourceProfile(
+  profiles: readonly ActiveProfile[] | undefined,
+  mime: string | undefined,
+  selectedProfileId: string,
+): ActiveProfile | undefined {
+  if (!profiles || !mime) return undefined;
+  const compatible = compatibleProfilesForSourceMime(profiles, mime);
+  if (compatible.length === 1) return compatible[0];
+  return compatible.find((profile) => profile.profileId === selectedProfileId);
+}
+
 async function sha256Hex(file: File): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -104,12 +120,13 @@ export function DocumentIntake({ onCreated }: DocumentIntakeProps) {
     [descriptor, profiles],
   );
   const selectedProfile = useMemo(
-    () => compatibleProfiles?.find((profile) => profile.profileId === profileId) ?? compatibleProfiles?.[0],
-    [compatibleProfiles, profileId],
+    () => selectCompatibleSourceProfile(profiles, descriptor?.mime, profileId),
+    [descriptor?.mime, profileId, profiles],
   );
   const wantsIssuance = hasExplicitRecipientReference(recipientUserId);
   const busy = ["hashing", "uploading", "preserving", "issuing"].includes(phase);
   const noCompatibleProfile = wantsIssuance && descriptor !== null && profiles !== undefined && compatibleProfiles?.length === 0;
+  const requiresProfileChoice = wantsIssuance && compatibleProfiles !== undefined && compatibleProfiles.length > 1 && !selectedProfile;
 
   const selectFile = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] ?? null;
@@ -121,7 +138,9 @@ export function DocumentIntake({ onCreated }: DocumentIntakeProps) {
   const submit = async () => {
     if (!file || !descriptor || busy) return;
     if (wantsIssuance && !selectedProfile) {
-      setError("A protected copy requires an authorized active watermark profile.");
+      setError(compatibleProfiles?.length && compatibleProfiles.length > 1
+        ? "Choose the watermark profile version for this protected copy."
+        : "A protected copy requires an authorized active watermark profile.");
       return;
     }
     try {
@@ -206,6 +225,7 @@ export function DocumentIntake({ onCreated }: DocumentIntakeProps) {
       </label>
       {wantsIssuance && <label>Watermark profile
         <select value={selectedProfile?.profileId ?? ""} onChange={(event) => setProfileId(event.target.value)} disabled={busy || !descriptor || !profiles || compatibleProfiles?.length === 0}>
+          {compatibleProfiles && compatibleProfiles.length > 1 && <option value="">Choose a compatible profile</option>}
           {!compatibleProfiles?.length && <option value="">No compatible active profile</option>}
           {compatibleProfiles?.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.profileId} · {profile.carrier}</option>)}
         </select>
@@ -214,6 +234,7 @@ export function DocumentIntake({ onCreated }: DocumentIntakeProps) {
     {phaseCopy[phase] && <p className="upload-status" role="status">{phaseCopy[phase]}</p>}
     {error && <p className="upload-error" role="alert">{error}</p>}
     {noCompatibleProfile && <p className="upload-error" role="alert">No active watermark profile can issue a native protected copy of this source type. You can still preserve the source without a recipient.</p>}
+    {requiresProfileChoice && <p className="upload-error" role="alert">Choose a watermark profile version before queuing this protected copy.</p>}
     <button className="primary" type="button" onClick={submit} disabled={!descriptor || busy || (wantsIssuance && !selectedProfile)}>
       {busy ? "Preserving…" : wantsIssuance ? "Preserve and issue copy" : "Preserve immutable source"} <span>→</span>
     </button>

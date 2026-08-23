@@ -40,7 +40,7 @@ describe("authenticated trace evidence intake", () => {
     expect(compatibleProfilesForEvidenceMime(profiles, "text/plain")).toEqual([]);
   });
 
-  it("keeps a compatible explicit profile or defaults safely after the evidence changes", () => {
+  it("preselects only a singular compatible profile and requires an explicit version choice otherwise", () => {
     const profiles = [
       { profileId: "image-v1", carrier: "image" as const, protocolVersion: "0.1", profileVersion: "1", detectorVersion: "1" },
       { profileId: "screen-v1", carrier: "screen" as const, protocolVersion: "0.1", profileVersion: "1", detectorVersion: "1" },
@@ -48,8 +48,10 @@ describe("authenticated trace evidence intake", () => {
     ];
 
     expect(selectCompatibleEvidenceProfile(profiles, "image/png", "screen-v1")?.profileId).toBe("screen-v1");
-    expect(selectCompatibleEvidenceProfile(profiles, "image/png", "structure-v1")?.profileId).toBe("image-v1");
-    expect(selectCompatibleEvidenceProfile(profiles, "application/pdf", "image-v1")?.profileId).toBe("screen-v1");
+    expect(selectCompatibleEvidenceProfile(profiles, "image/png", "structure-v1")).toBeUndefined();
+    expect(selectCompatibleEvidenceProfile(profiles, "application/pdf", "image-v1")).toBeUndefined();
+    expect(selectCompatibleEvidenceProfile(profiles, "application/pdf", "structure-v1")?.profileId).toBe("structure-v1");
+    expect(selectCompatibleEvidenceProfile([profiles[0]], "image/png", "")).toEqual(profiles[0]);
     expect(selectCompatibleEvidenceProfile(profiles, "text/plain", "screen-v1")).toBeUndefined();
     expect(selectCompatibleEvidenceProfile(undefined, "image/png", "")).toBeUndefined();
   });

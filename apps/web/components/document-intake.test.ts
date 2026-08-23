@@ -4,6 +4,7 @@ import {
   documentIntakeDescriptor,
   hasExplicitRecipientReference,
   isProfileCompatibleWithSourceMime,
+  selectCompatibleSourceProfile,
 } from "./document-intake";
 
 describe("document intake descriptor", () => {
@@ -50,5 +51,17 @@ describe("protected-copy guard", () => {
     const profiles = [{ profileId: "structure-v1", carrier: "structure" as const, profileVersion: "1" }];
     expect(compatibleProfilesForSourceMime(profiles, "application/pdf")).toEqual([]);
     expect(compatibleProfilesForSourceMime(profiles, "text/plain")).toEqual([]);
+  });
+
+  it("preselects only a singular compatible profile and never inherits profile query order", () => {
+    const image = { profileId: "image-v1", carrier: "image" as const, profileVersion: "1" };
+    const imageV2 = { profileId: "image-v2", carrier: "image" as const, profileVersion: "2" };
+    const screen = { profileId: "screen-v1", carrier: "screen" as const, profileVersion: "1" };
+
+    expect(selectCompatibleSourceProfile([image, screen], "image/png", "")?.profileId).toBe("image-v1");
+    expect(selectCompatibleSourceProfile([image, imageV2, screen], "image/png", "")).toBeUndefined();
+    expect(selectCompatibleSourceProfile([image, imageV2, screen], "image/png", "image-v2")?.profileId).toBe("image-v2");
+    expect(selectCompatibleSourceProfile([screen], "image/png", "screen-v1")).toBeUndefined();
+    expect(selectCompatibleSourceProfile(undefined, "image/png", "image-v1")).toBeUndefined();
   });
 });

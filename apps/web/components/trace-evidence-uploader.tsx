@@ -69,7 +69,11 @@ export function compatibleProfilesForEvidenceMime(
   return profiles.filter((profile) => isProfileCompatibleWithEvidenceMime(profile, mimeType));
 }
 
-/** Keep an explicit compatible choice; otherwise make the first active compatible profile the visible default. */
+/**
+ * A single compatible active profile is safe to preselect.  Multiple
+ * compatible profiles represent a forensic-version decision, so require an
+ * investigator-selected ID instead of inheriting registry query order.
+ */
 export function selectCompatibleEvidenceProfile(
   profiles: readonly TraceEvidenceProfile[] | undefined,
   mimeType: string | null,
@@ -77,7 +81,8 @@ export function selectCompatibleEvidenceProfile(
 ): TraceEvidenceProfile | undefined {
   if (!profiles || !mimeType) return undefined;
   const compatible = compatibleProfilesForEvidenceMime(profiles, mimeType);
-  return compatible.find((profile) => profile.profileId === selectedProfileId) ?? compatible[0];
+  if (compatible.length === 1) return compatible[0];
+  return compatible.find((profile) => profile.profileId === selectedProfileId);
 }
 
 /** Project only the authorized document metadata needed to present investigator context. */
@@ -142,7 +147,9 @@ export function TraceEvidenceUploader({ onCaseCreated }: { onCaseCreated: (caseI
     if (!file || busy) return;
     if (!selectedProfile) {
       setStatus("error");
-      setError("No authorized active detection profile is compatible with this evidence type.");
+      setError(compatibleProfiles?.length && compatibleProfiles.length > 1
+        ? "Choose the detection profile version for this evidence."
+        : "No authorized active detection profile is compatible with this evidence type.");
       return;
     }
     try {
@@ -177,9 +184,10 @@ export function TraceEvidenceUploader({ onCaseCreated }: { onCaseCreated: (caseI
 
   const busy = status === "hashing" || status === "uploading" || status === "creating";
   const noCompatibleProfile = file !== null && profiles !== undefined && compatibleProfiles?.length === 0;
+  const requiresProfileChoice = compatibleProfiles !== undefined && compatibleProfiles.length > 1 && !selectedProfile;
   const statusText = status === "hashing" ? "Hashing immutable source…" : status === "uploading" ? "Preserving original evidence…" : status === "creating" ? "Creating trace case…" : null;
   return <div className="trace-upload live-uploader">
     <div className="dropzone"><div className="upload-glyph">↑</div><h2>{file ? file.name : "Drop leak evidence here"}</h2><p>{file ? `${acceptedEvidenceLabel(normalizedArtifactMime(file) ?? file.type)} · the original will be hashed before processing.` : "JPEG, PNG, WebP, PDF, DOCX, and PPTX evidence is supported."}</p><div><label className="file-button">Choose file<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.docx,.pptx" onChange={selectFile} disabled={busy} /></label><span>or drag and drop</span></div>{file && <div className="file-preview"><span>{(normalizedArtifactMime(file) ?? file.type).split("/").at(-1)?.toUpperCase() || "FILE"}</span><b>{file.name}</b><small>{Math.ceil(file.size / 1024)} KB · SHA-256 will be calculated locally</small><button onClick={() => setFile(null)} disabled={busy}>×</button></div>}</div>
-    <div className="trace-side-note"><span className="badge info">LIVE EVIDENCE INTAKE</span><h3>Preserve first. Process second.</h3><p>The upload is sent directly to immutable storage. Only an authorized investigator can create this case.</p><label className="profile-select">Detection profile<select value={selectedProfile?.profileId ?? ""} onChange={(event) => setProfileId(event.target.value)} disabled={busy || !evidenceMime || !profiles || compatibleProfiles?.length === 0}>{!evidenceMime && <option value="">Choose evidence first</option>}{evidenceMime && compatibleProfiles?.length === 0 && <option value="">No compatible active profile</option>}{compatibleProfiles?.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.profileId} · {profile.carrier}</option>)}</select></label><label className="profile-select">Authorized source document <select value={selectedDocumentId ?? ""} onChange={(event) => setSuspectedDocumentId(event.target.value)} disabled={busy || !documents || documentChoices.length === 0} aria-describedby="suspected-document-help"><option value="">No document selected</option>{documentChoices.map((document) => <option key={document.documentId} value={document.documentId}>{document.label}</option>)}</select></label><p id="suspected-document-help" className="muted">Optional investigator context for server-scoped matching. It does not automatically match your upload to document content.</p>{noCompatibleProfile && <p className="upload-error" role="alert">No active detection profile is compatible with this evidence type. Choose another evidence file or activate a compatible profile.</p>}{statusText && <p className="upload-status" role="status">{statusText}</p>}{error && <p className="upload-error" role="alert">{error}</p>}<button className="primary" disabled={!file || !selectedProfile || busy} onClick={submit}>{busy ? "Preserving evidence…" : "Preserve and analyze"} <span>→</span></button>{profiles === undefined && <p className="muted">Loading authorized profile registry…</p>}{documents === undefined && <p className="muted">Loading authorized source documents…</p>}{documents?.length === 0 && <p className="muted">No authorized source documents are available.</p>}</div>
+    <div className="trace-side-note"><span className="badge info">LIVE EVIDENCE INTAKE</span><h3>Preserve first. Process second.</h3><p>The upload is sent directly to immutable storage. Only an authorized investigator can create this case.</p><label className="profile-select">Detection profile<select value={selectedProfile?.profileId ?? ""} onChange={(event) => setProfileId(event.target.value)} disabled={busy || !evidenceMime || !profiles || compatibleProfiles?.length === 0}>{!evidenceMime && <option value="">Choose evidence first</option>}{compatibleProfiles && compatibleProfiles.length > 1 && <option value="">Choose a compatible profile</option>}{evidenceMime && compatibleProfiles?.length === 0 && <option value="">No compatible active profile</option>}{compatibleProfiles?.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.profileId} · {profile.carrier}</option>)}</select></label><label className="profile-select">Authorized source document <select value={selectedDocumentId ?? ""} onChange={(event) => setSuspectedDocumentId(event.target.value)} disabled={busy || !documents || documentChoices.length === 0} aria-describedby="suspected-document-help"><option value="">No document selected</option>{documentChoices.map((document) => <option key={document.documentId} value={document.documentId}>{document.label}</option>)}</select></label><p id="suspected-document-help" className="muted">Optional investigator context for server-scoped matching. It does not automatically match your upload to document content.</p>{noCompatibleProfile && <p className="upload-error" role="alert">No active detection profile is compatible with this evidence type. Choose another evidence file or activate a compatible profile.</p>}{requiresProfileChoice && <p className="upload-error" role="alert">Choose a detection profile version before preserving this evidence.</p>}{statusText && <p className="upload-status" role="status">{statusText}</p>}{error && <p className="upload-error" role="alert">{error}</p>}<button className="primary" disabled={!file || !selectedProfile || busy} onClick={submit}>{busy ? "Preserving evidence…" : "Preserve and analyze"} <span>→</span></button>{profiles === undefined && <p className="muted">Loading authorized profile registry…</p>}{documents === undefined && <p className="muted">Loading authorized source documents…</p>}{documents?.length === 0 && <p className="muted">No authorized source documents are available.</p>}</div>
   </div>;
 }
