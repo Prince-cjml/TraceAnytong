@@ -9,7 +9,7 @@ import { isWorkOSAuthBridgeEnabled } from "./lib/workos-auth-config";
  */
 export default function proxy(request: NextRequest, event: NextFetchEvent) {
   if (!isWorkOSAuthBridgeEnabled()) return NextResponse.next();
-  return authkitProxy()(request, event);
+  return authkitProxy({ redirectUri: process.env.WORKOS_REDIRECT_URI })(request, event);
 }
 
 export const config = {
