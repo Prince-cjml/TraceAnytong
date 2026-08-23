@@ -17,7 +17,9 @@ const SNAPSHOTTED_TRACE_HANDLE = "0123456789abcdef0123456789abcdef";
 const OUT_OF_SNAPSHOT_TRACE_HANDLE = "fedcba9876543210fedcba9876543210";
 const SCREEN_PROFILE_ID = "screen-profile-integration-v1";
 const SCREEN_TRACE_HANDLE = "00112233445566778899aabbccddeeff";
+const SCREEN_ISSUANCE_TRACE_HANDLE = "11223344556677889900aabbccddeeff";
 const OUTPUT_SHA256 = "a".repeat(64);
+const SCREEN_OUTPUT_SHA256 = "c".repeat(64);
 const FIXTURE_TIME = 1_725_000_000_000;
 const FIXTURE_EXPIRY = 4_000_000_000_000;
 
@@ -38,6 +40,7 @@ type Seed = {
 type ScreenSeed = {
   caseEvidenceStorageId: any;
   webSessionId: any;
+  issuanceId: any;
 };
 
 async function seedTraceFixture(t: ReturnType<typeof convexTest>): Promise<Seed> {
@@ -87,10 +90,12 @@ async function seedScreenTraceFixture(t: ReturnType<typeof convexTest>): Promise
   return t.run(async (ctx) => {
     const caseEvidenceStorageId = await ctx.storage.store(new Blob(["screen evidence"]));
     const tileStorageId = await ctx.storage.store(new Blob(["screen tile"]));
+    const sourceStorageId = await ctx.storage.store(new Blob(["screen issuance source"]));
+    const derivedStorageId = await ctx.storage.store(new Blob(["screen issuance derived"]));
     const orgId = await ctx.db.insert("organizations", {
       name: "Screen Integration Organization", slug: "screen-integration-organization", createdAt: FIXTURE_TIME,
     });
-    await ctx.db.insert("users", {
+    const reporterId = await ctx.db.insert("users", {
       orgId, authSubject: "screen-integration-investigator", displayName: "Screen Investigator",
       email: "screen-investigator@fixture.invalid", role: "investigator", status: "active", createdAt: FIXTURE_TIME,
     });
@@ -103,12 +108,31 @@ async function seedScreenTraceFixture(t: ReturnType<typeof convexTest>): Promise
       carrierVersion: CARRIER_VERSION, detectorVersion: DETECTOR_VERSION, strength: 0.5, keyVersion: KEY_VERSION,
       thresholds: { minimumConfidence: 0.8, minimumMargin: 0.1 }, status: "active", createdAt: FIXTURE_TIME,
     });
+    const documentId = await ctx.db.insert("documents", {
+      orgId, title: "Screen-issued source", classification: "internal", ownerId: reporterId,
+      createdAt: FIXTURE_TIME, updatedAt: FIXTURE_TIME,
+    });
+    const versionId = await ctx.db.insert("documentVersions", {
+      documentId, sourceStorageId, sha256: "d".repeat(64), mime: "application/pdf", size: 22,
+      fingerprintVersion: FINGERPRINT_VERSION, coarseFingerprint: "screen-issued-fixture", createdAt: FIXTURE_TIME,
+    });
+    const issuanceId = await ctx.db.insert("issuances", {
+      orgId, versionId, userId: recipientId, traceHandle: SCREEN_ISSUANCE_TRACE_HANDLE,
+      profileId: SCREEN_PROFILE_ID, derivedStorageId, status: "ready", issuedAt: FIXTURE_TIME + 1,
+    });
+    const issuanceJobId = await ctx.db.insert("jobs", {
+      orgId, jobKey: "seeded-succeeded-screen-issuance", type: "personalize", inputStorageId: sourceStorageId,
+      issuanceId, profileId: SCREEN_PROFILE_ID, state: "succeeded", workerClass: "cpu",
+      nextAttemptAt: FIXTURE_TIME, attempts: 1, result: { outputSha256: SCREEN_OUTPUT_SHA256 },
+      createdAt: FIXTURE_TIME, updatedAt: FIXTURE_TIME,
+    });
+    await ctx.db.patch(issuanceId, { jobId: issuanceJobId });
     const webSessionId = await ctx.db.insert("webSessions", {
       orgId, userId: recipientId, traceHandle: SCREEN_TRACE_HANDLE, routeScope: "/screen-integration",
       profileId: SCREEN_PROFILE_ID, epoch: 1, startedAt: FIXTURE_TIME, expiresAt: FIXTURE_EXPIRY,
       lastSeenAt: FIXTURE_TIME, tileStorageId,
     });
-    return { caseEvidenceStorageId, webSessionId };
+    return { caseEvidenceStorageId, webSessionId, issuanceId };
   });
 }
 
@@ -127,13 +151,14 @@ function candidateArgs(caseId: any, jobId: any, issuanceId: any, traceHandle: st
 function screenCandidateArgs(
   caseId: any,
   jobId: any,
-  webSessionId: any,
+  traceHandle: string,
+  provenance: { issuanceId: any } | { webSessionId: any },
   rank: number,
   requestedDecision: "attributed" | "insufficient",
 ) {
   return {
     workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId, caseId,
-    traceHandle: SCREEN_TRACE_HANDLE, webSessionId,
+    traceHandle, ...provenance,
     watermarkScore: 0.95, watermarkMargin: 0.2, fingerprintScore: 0.9, geometricScore: 0.8,
     structureScore: 0.7, timelineScore: 0.6, finalConfidence: 0.95, requestedDecision,
     explanation: "Raw screen correlation evidence supported this candidate.",
@@ -186,12 +211,16 @@ describe("trace case handlers", () => {
     expect(input.candidates[0]).not.toHaveProperty("email");
     expect(input.candidates[0]).not.toHaveProperty("recipient");
 
-    await expect(t.mutation(api.traceCases.recordCandidate, candidateArgs(
+    const firstCandidateArgs = candidateArgs(
       caseId, traceJob!._id, seed.candidateIssuanceId, SNAPSHOTTED_TRACE_HANDLE,
-    ))).resolves.toMatchObject({ decision: "attributed" });
-    await expect(t.mutation(api.traceCases.recordCandidate, candidateArgs(
-      caseId, traceJob!._id, seed.candidateIssuanceId, SNAPSHOTTED_TRACE_HANDLE,
-    ))).rejects.toThrow("DUPLICATE_CANDIDATE_RANK");
+    );
+    const firstCandidate = await t.mutation(api.traceCases.recordCandidate, firstCandidateArgs);
+    expect(firstCandidate).toMatchObject({ decision: "attributed" });
+    await expect(t.mutation(api.traceCases.recordCandidate, firstCandidateArgs)).resolves.toEqual(firstCandidate);
+    await expect(t.mutation(api.traceCases.recordCandidate, {
+      ...firstCandidateArgs,
+      rawEvidence: { peaks: [0.94, 0.75], phase: 4 },
+    })).rejects.toThrow("DUPLICATE_CANDIDATE_RANK");
     await expect(t.mutation(api.traceCases.recordCandidate, candidateArgs(
       caseId, traceJob!._id, outOfSnapshotIssuanceId, OUT_OF_SNAPSHOT_TRACE_HANDLE,
     ))).rejects.toThrow("TRACE_CANDIDATE_SNAPSHOT_MISMATCH");
@@ -210,6 +239,13 @@ describe("trace case handlers", () => {
     const traceJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === caseId));
     expect(traceJob).toBeDefined();
 
+    // The input remains derived from the newly created job's immutable
+    // bindings even if live issuance/session metadata changes before lease.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(seed.issuanceId, { issuedAt: FIXTURE_TIME + 9_999 });
+      await ctx.db.patch(seed.webSessionId, { startedAt: FIXTURE_TIME + 9_998 });
+    });
+
     const claimed = await t.mutation(api.jobs.claim, {
       workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", capabilities: ["cpu"],
     });
@@ -220,22 +256,31 @@ describe("trace case handlers", () => {
     const input = await t.mutation(api.jobs.getWorkerInput, {
       workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId: traceJob!._id,
     });
-    expect(input.candidates).toEqual([{
-      traceHandle: SCREEN_TRACE_HANDLE, scope: "web_session", createdAt: FIXTURE_TIME,
-      webSessionId: seed.webSessionId,
-    }]);
+    expect(input.candidates).toEqual([
+      {
+        traceHandle: SCREEN_ISSUANCE_TRACE_HANDLE, scope: "issuance", createdAt: FIXTURE_TIME + 1,
+        issuanceId: seed.issuanceId, outputSha256: SCREEN_OUTPUT_SHA256,
+      },
+      {
+        traceHandle: SCREEN_TRACE_HANDLE, scope: "web_session", createdAt: FIXTURE_TIME,
+        webSessionId: seed.webSessionId,
+      },
+    ]);
+    expect(JSON.stringify(input.candidates)).not.toContain("screen-recipient@fixture.invalid");
+    expect(input.candidates.every((candidate) => !Object.hasOwn(candidate, "email"))).toBe(true);
 
     await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
-      caseId, traceJob!._id, seed.webSessionId, 1, "insufficient",
+      caseId, traceJob!._id, SCREEN_ISSUANCE_TRACE_HANDLE, { issuanceId: seed.issuanceId }, 1, "insufficient",
+    ))).resolves.toMatchObject({ decision: "insufficient" });
+
+    await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
+      caseId, traceJob!._id, SCREEN_TRACE_HANDLE, { webSessionId: seed.webSessionId }, 2, "insufficient",
     ))).resolves.toMatchObject({ decision: "insufficient" });
     await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
-      caseId, traceJob!._id, seed.webSessionId, 2, "insufficient",
-    ))).resolves.toMatchObject({ decision: "insufficient" });
-    await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
-      caseId, traceJob!._id, seed.webSessionId, 2, "attributed",
+      caseId, traceJob!._id, SCREEN_TRACE_HANDLE, { webSessionId: seed.webSessionId }, 2, "attributed",
     ))).rejects.toThrow("SCREEN_RUNNER_UP_ATTRIBUTION_FORBIDDEN");
     await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
-      caseId, traceJob!._id, seed.webSessionId, 3, "insufficient",
+      caseId, traceJob!._id, SCREEN_TRACE_HANDLE, { webSessionId: seed.webSessionId }, 3, "insufficient",
     ))).rejects.toThrow("SCREEN_CANDIDATE_RANK_LIMIT");
   });
 });

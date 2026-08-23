@@ -38,6 +38,36 @@ function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
+function stableEvidenceJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
+  if (Array.isArray(value)) return `[${value.map(stableEvidenceJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableEvidenceJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+}
+
+function isExactCandidateRetry(existing: any, args: any, decisionValue: string): boolean {
+  return existing.traceHandle === args.traceHandle
+    && String(existing.issuanceId ?? "") === String(args.issuanceId ?? "")
+    && String(existing.webSessionId ?? "") === String(args.webSessionId ?? "")
+    && existing.watermarkScore === args.watermarkScore
+    && existing.watermarkMargin === args.watermarkMargin
+    && existing.fingerprintScore === args.fingerprintScore
+    && existing.geometricScore === args.geometricScore
+    && existing.structureScore === args.structureScore
+    && existing.timelineScore === args.timelineScore
+    && existing.finalConfidence === args.finalConfidence
+    && existing.decision === decisionValue
+    && existing.explanation === args.explanation
+    && stableEvidenceJson(existing.rawEvidence) === stableEvidenceJson(args.rawEvidence)
+    && existing.protocolVersion === args.protocolVersion
+    && existing.profileVersion === args.profileVersion
+    && existing.carrierVersion === args.carrierVersion
+    && existing.detectorVersion === args.detectorVersion
+    && existing.fingerprintVersion === args.fingerprintVersion
+    && existing.keyVersion === args.keyVersion
+    && existing.modelVersion === args.modelVersion
+    && existing.workerVersion === args.workerVersion;
+}
+
 /** Resolve once, at trace-case creation, and persist only anonymous bindings. */
 async function createTraceCandidateSnapshot(
   ctx: any,
@@ -45,23 +75,6 @@ async function createTraceCandidateSnapshot(
   profile: any,
   now: number,
 ): Promise<TraceCandidateSnapshotBinding[]> {
-  if (profile.carrier === "screen") {
-    const sessions = await ctx.db.query("webSessions")
-      .withIndex("by_org_profile_started", (q: any) => q.eq("orgId", orgId).eq("profileId", profile.profileId))
-      .order("desc")
-      .take(MAX_TRACE_CANDIDATES);
-    const snapshot = sessions
-      .filter((session: any) => session.tileStorageId !== undefined && session.expiresAt > now)
-      .map((session: any) => ({
-        traceHandle: session.traceHandle,
-        scope: "web_session" as const,
-        createdAt: session.startedAt,
-        webSessionId: String(session._id),
-      }));
-    assertTraceCandidateSnapshot(snapshot);
-    return snapshot;
-  }
-
   const issuances = await ctx.db.query("issuances")
     .withIndex("by_org_profile_status", (q: any) => q.eq("orgId", orgId).eq("profileId", profile.profileId).eq("status", "ready"))
     .take(MAX_TRACE_CANDIDATES);
@@ -79,8 +92,36 @@ async function createTraceCandidateSnapshot(
       outputSha256,
     }];
   });
-  assertTraceCandidateSnapshot(snapshot);
-  return snapshot;
+  if (profile.carrier !== "screen") {
+    assertTraceCandidateSnapshot(snapshot);
+    return snapshot;
+  }
+
+  // A screen profile can watermark a protected web session or an issued
+  // artifact. Resolve both sources once, then freeze their most recent
+  // anonymous bindings together. The worker must never re-query either table.
+  const sessions = await ctx.db.query("webSessions")
+    .withIndex("by_org_profile_started", (q: any) => q.eq("orgId", orgId).eq("profileId", profile.profileId))
+    .order("desc")
+    .take(MAX_TRACE_CANDIDATES);
+  const sessionSnapshot: TraceCandidateSnapshotBinding[] = sessions
+    .filter((session: any) => session.tileStorageId !== undefined && session.expiresAt > now)
+    .map((session: any) => ({
+      traceHandle: session.traceHandle,
+      scope: "web_session" as const,
+      createdAt: session.startedAt,
+      webSessionId: String(session._id),
+    }));
+  const combined = [...snapshot, ...sessionSnapshot]
+    .sort((left, right) => (
+      right.createdAt - left.createdAt
+      || left.scope.localeCompare(right.scope)
+      || left.traceHandle.localeCompare(right.traceHandle)
+      || (left.issuanceId ?? left.webSessionId ?? "").localeCompare(right.issuanceId ?? right.webSessionId ?? "")
+    ))
+    .slice(0, MAX_TRACE_CANDIDATES);
+  assertTraceCandidateSnapshot(combined);
+  return combined;
 }
 
 export const create = mutation({
@@ -153,12 +194,17 @@ export const recordCandidate = mutation({
       throw new Error("CANDIDATE_PROFILE_MISMATCH");
     }
     assertCandidateRankForCarrier(args.rank, profile.carrier, args.requestedDecision);
+    const thresholds = parseTraceThresholds(profile.thresholds);
+    const decisionValue = resolveTraceDecision(args.requestedDecision, args.finalConfidence, args.watermarkMargin, thresholds);
     const existingAtRank = await ctx.db.query("traceCandidates")
       .withIndex("by_case_rank", (q: any) => q.eq("caseId", args.caseId).eq("rank", args.rank))
       .first();
-    if (existingAtRank) throw new Error("DUPLICATE_CANDIDATE_RANK");
-    const thresholds = parseTraceThresholds(profile.thresholds);
-    const decisionValue = resolveTraceDecision(args.requestedDecision, args.finalConfidence, args.watermarkMargin, thresholds);
+    if (existingAtRank) {
+      if (isExactCandidateRetry(existingAtRank, args, decisionValue)) {
+        return { candidateId: existingAtRank._id, decision: existingAtRank.decision };
+      }
+      throw new Error("DUPLICATE_CANDIDATE_RANK");
+    }
     const candidateId = await ctx.db.insert("traceCandidates", {
       caseId: args.caseId, traceHandle: args.traceHandle, issuanceId: args.issuanceId, webSessionId: args.webSessionId,
       watermarkScore: args.watermarkScore, watermarkMargin: args.watermarkMargin, fingerprintScore: args.fingerprintScore,
