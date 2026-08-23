@@ -27,6 +27,7 @@ import type * as traceCandidateSnapshotRules from "../traceCandidateSnapshotRule
 import type * as traceCaseRules from "../traceCaseRules.js";
 import type * as traceCases from "../traceCases.js";
 import type * as traceDecisionRules from "../traceDecisionRules.js";
+import type * as traceRankRules from "../traceRankRules.js";
 import type * as users from "../users.js";
 import type * as watermarkProfileRules from "../watermarkProfileRules.js";
 import type * as watermarkProfiles from "../watermarkProfiles.js";
@@ -60,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   traceCaseRules: typeof traceCaseRules;
   traceCases: typeof traceCases;
   traceDecisionRules: typeof traceDecisionRules;
+  traceRankRules: typeof traceRankRules;
   users: typeof users;
   watermarkProfileRules: typeof watermarkProfileRules;
   watermarkProfiles: typeof watermarkProfiles;
