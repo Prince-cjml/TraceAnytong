@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertCandidateInTraceSnapshot,
+  assertTraceContentBinding,
   assertTraceCandidateSnapshot,
   MAX_TRACE_CANDIDATES,
   PERCEPTUAL_FINGERPRINT_VERSION,
@@ -54,6 +55,22 @@ test("trace candidate snapshots are bounded anonymous bindings with no PII field
     assert.equal("url" in candidate, false);
     assert.equal("secret" in candidate, false);
   }
+});
+
+test("trace content bindings freeze only an opaque authorized document ID", () => {
+  const binding = { documentId: "documents:immutable" };
+  assert.doesNotThrow(() => assertTraceContentBinding(binding));
+  assert.equal("email" in binding, false);
+  assert.equal("recipient" in binding, false);
+  assert.equal("url" in binding, false);
+  assert.throws(
+    () => assertTraceContentBinding({ ...binding, email: "not-permitted@example.test" } as any),
+    /INVALID_TRACE_CONTENT_BINDING/,
+  );
+  assert.throws(
+    () => assertTraceContentBinding({ documentId: "" }),
+    /INVALID_TRACE_CONTENT_BINDING/,
+  );
 });
 
 test("fingerprint snapshots project only validated anonymous fields", () => {

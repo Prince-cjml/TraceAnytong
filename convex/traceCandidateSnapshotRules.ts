@@ -27,6 +27,15 @@ export type SubmittedCandidateBinding = {
   webSessionId?: string;
 };
 
+/**
+ * A trace job may freeze an investigator-authorized document context. This
+ * is deliberately only an opaque document ID: it carries no recipient data
+ * and does not claim a byte-, page-, or geometric content match.
+ */
+export type TraceContentBinding = {
+  documentId: string;
+};
+
 const TRACE_HANDLE = /^[a-f0-9]{32}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const DHASH = /^[a-f0-9]{16}$/;
@@ -39,6 +48,16 @@ const SNAPSHOT_FIELDS = new Set([
   "traceHandle", "scope", "createdAt", "issuanceId", "webSessionId", "wmCode", "outputSha256", "outputFingerprint",
 ]);
 const FINGERPRINT_FIELDS = new Set(["fingerprintVersion", "sha256", "mimeType", "dHash", "width", "height"]);
+const CONTENT_BINDING_FIELDS = new Set(["documentId"]);
+
+/** Validate the small PII-free document binding persisted on a trace job. */
+export function assertTraceContentBinding(binding: TraceContentBinding): void {
+  if (!binding || typeof binding !== "object"
+    || Object.keys(binding).some((field) => !CONTENT_BINDING_FIELDS.has(field))
+    || typeof binding.documentId !== "string" || binding.documentId.length === 0) {
+    throw new Error("INVALID_TRACE_CONTENT_BINDING");
+  }
+}
 
 /**
  * Project only the stable, anonymous portion of a worker-produced perceptual

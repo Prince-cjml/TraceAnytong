@@ -12,6 +12,8 @@ import {
   assertTraceCandidateSnapshot,
   MAX_TRACE_CANDIDATES,
   projectIssuanceFingerprint,
+  assertTraceContentBinding,
+  type TraceContentBinding,
   type TraceCandidateSnapshotBinding,
 } from "./traceCandidateSnapshotRules";
 import { assertCandidateRank, assertCandidateRankForCarrier } from "./traceRankRules";
@@ -75,10 +77,30 @@ async function createTraceCandidateSnapshot(
   orgId: any,
   profile: any,
   now: number,
+  contentBinding?: TraceContentBinding,
 ): Promise<TraceCandidateSnapshotBinding[]> {
-  const issuances = await ctx.db.query("issuances")
-    .withIndex("by_org_profile_status", (q: any) => q.eq("orgId", orgId).eq("profileId", profile.profileId).eq("status", "ready"))
-    .take(MAX_TRACE_CANDIDATES);
+  if (contentBinding) assertTraceContentBinding(contentBinding);
+  // A selected document is an authorized investigator context, not a content
+  // match. It nevertheless scopes issuance candidates before the immutable
+  // job snapshot is created, so candidate correlation cannot range across
+  // unrelated document versions. The unselected path intentionally retains
+  // its existing organization/profile candidate behavior.
+  const issuances = contentBinding
+    ? (await Promise.all((await ctx.db.query("documentVersions")
+      .withIndex("by_document_created", (q: any) => q.eq("documentId", contentBinding.documentId))
+      .order("desc")
+      .take(MAX_TRACE_CANDIDATES))
+      .map((version: any) => ctx.db.query("issuances")
+        .withIndex("by_version_time", (q: any) => q.eq("versionId", version._id))
+        .order("desc")
+        .take(MAX_TRACE_CANDIDATES))))
+      .flat()
+      .filter((issuance: any) => issuance.orgId === orgId && issuance.profileId === profile.profileId && issuance.status === "ready")
+      .sort((left: any, right: any) => right.issuedAt - left.issuedAt || String(left._id).localeCompare(String(right._id)))
+      .slice(0, MAX_TRACE_CANDIDATES)
+    : await ctx.db.query("issuances")
+      .withIndex("by_org_profile_status", (q: any) => q.eq("orgId", orgId).eq("profileId", profile.profileId).eq("status", "ready"))
+      .take(MAX_TRACE_CANDIDATES);
   const candidateJobs = await Promise.all(issuances.map((issuance: any) => issuance.jobId ? ctx.db.get(issuance.jobId) : null));
   const snapshot = issuances.flatMap((issuance: any, index: number) => {
     const candidateJob = candidateJobs[index];
@@ -97,7 +119,10 @@ async function createTraceCandidateSnapshot(
       ...(outputFingerprint === undefined || outputFingerprint.sha256 !== outputSha256 ? {} : { outputFingerprint }),
     }];
   });
-  if (profile.carrier !== "screen") {
+  // Web sessions currently have no immutable document/content binding. A
+  // selected document must therefore never include them as lookalike
+  // candidates. The existing unselected screen path remains unchanged.
+  if (profile.carrier !== "screen" || contentBinding) {
     assertTraceCandidateSnapshot(snapshot);
     return snapshot;
   }
@@ -135,22 +160,27 @@ export const create = mutation({
     assertSha256(args.evidenceSha256);
     assertSupportedArtifactMime(args.evidenceMime);
     const reporter = await requireRole(ctx, ["investigator", "admin"]);
+    const traceContentBinding = args.suspectedDocumentId
+      ? { documentId: String(args.suspectedDocumentId) }
+      : undefined;
     if (args.suspectedDocumentId) {
       const document = await ctx.db.get(args.suspectedDocumentId);
       if (!document) throw new Error("NOT_FOUND");
       sameOrganization(document.orgId, reporter);
     }
+    if (traceContentBinding) assertTraceContentBinding(traceContentBinding);
     const profile = await ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", args.profileId)).unique();
     if (!profile || profile.status !== "active") throw new Error("INVALID_PROFILE");
     if (profile.protocolVersion !== args.protocolVersion) throw new Error("PROFILE_PROTOCOL_MISMATCH");
     assertTraceProfileCompatibility(args.evidenceMime, profile.carrier);
     const now = Date.now();
-    const traceCandidateSnapshot = await createTraceCandidateSnapshot(ctx, reporter.orgId, profile, now);
+    const traceCandidateSnapshot = await createTraceCandidateSnapshot(ctx, reporter.orgId, profile, now, traceContentBinding);
     const { profileId: _profileId, ...caseArgs } = args;
     const caseId = await ctx.db.insert("traceCases", { ...caseArgs, orgId: reporter.orgId, reporterId: reporter._id, state: "queued", createdAt: now });
     await ctx.db.insert("jobs", {
       orgId: reporter.orgId, jobKey: await sha256Hex(`trace|${caseId}|${args.profileId}`), type: "trace",
       inputStorageId: args.evidenceStorageId, caseId, profileId: args.profileId, workerClass: "cpu",
+      ...(traceContentBinding ? { traceContentBinding: { documentId: args.suspectedDocumentId! } } : {}),
       traceCandidateSnapshot: traceCandidateSnapshot as any,
       state: "queued", nextAttemptAt: now, attempts: 0, createdAt: now, updatedAt: now,
     });

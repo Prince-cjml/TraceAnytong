@@ -66,6 +66,12 @@ export default defineSchema({
     profileId: v.string(), state: jobState, workerClass: v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid")),
     // Immutable server-resolved bindings for trace jobs. It never contains
     // recipient data, URLs, profile keys, or other secret material.
+    // When an investigator supplied an authorized document context, this
+    // freezes only its opaque ID. It scopes issuance candidates without
+    // asserting that evidence bytes or pages have been content-matched.
+    traceContentBinding: v.optional(v.object({
+      documentId: v.id("documents"),
+    })),
     traceCandidateSnapshot: v.optional(v.array(v.object({
       traceHandle: v.string(), scope: v.union(v.literal("issuance"), v.literal("web_session")), createdAt: v.number(),
       issuanceId: v.optional(v.id("issuances")), webSessionId: v.optional(v.id("webSessions")),

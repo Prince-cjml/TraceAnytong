@@ -34,6 +34,7 @@ const modules = import.meta.glob([
 
 type Seed = {
   caseEvidenceStorageId: any;
+  documentId: any;
   candidateIssuanceId: any;
   candidateJobId: any;
   outOfSnapshotIssuanceId: any;
@@ -41,6 +42,7 @@ type Seed = {
 
 type ScreenSeed = {
   caseEvidenceStorageId: any;
+  documentId: any;
   webSessionId: any;
   issuanceId: any;
 };
@@ -90,7 +92,7 @@ async function seedTraceFixture(t: ReturnType<typeof convexTest>): Promise<Seed>
       }, createdAt: now, updatedAt: now,
     });
     await ctx.db.patch(candidateIssuanceId, { jobId: candidateJobId });
-    return { caseEvidenceStorageId, candidateIssuanceId, candidateJobId, outOfSnapshotIssuanceId: undefined };
+    return { caseEvidenceStorageId, documentId, candidateIssuanceId, candidateJobId, outOfSnapshotIssuanceId: undefined };
   });
 }
 
@@ -140,7 +142,42 @@ async function seedScreenTraceFixture(t: ReturnType<typeof convexTest>): Promise
       profileId: SCREEN_PROFILE_ID, epoch: 1, startedAt: FIXTURE_TIME, expiresAt: FIXTURE_EXPIRY,
       lastSeenAt: FIXTURE_TIME, tileStorageId,
     });
-    return { caseEvidenceStorageId, webSessionId, issuanceId };
+    return { caseEvidenceStorageId, documentId, webSessionId, issuanceId };
+  });
+}
+
+async function seedUnrelatedReadyIssuance(t: ReturnType<typeof convexTest>, seed: Seed) {
+  return t.run(async (ctx) => {
+    const original = await ctx.db.get(seed.candidateIssuanceId);
+    if (!original) throw new Error("missing seeded issuance");
+    const originalVersion = await ctx.db.get(original.versionId);
+    if (!originalVersion) throw new Error("missing seeded source version");
+    const originalDocument = await ctx.db.get(originalVersion.documentId);
+    if (!originalDocument) throw new Error("missing seeded document");
+    const sourceStorageId = await ctx.storage.store(new Blob(["unrelated source"]));
+    const derivedStorageId = await ctx.storage.store(new Blob(["unrelated derived"]));
+    const documentId = await ctx.db.insert("documents", {
+      orgId: original.orgId, title: "Unrelated source", classification: "internal", ownerId: originalDocument.ownerId,
+      createdAt: FIXTURE_TIME + 10, updatedAt: FIXTURE_TIME + 10,
+    });
+    const versionId = await ctx.db.insert("documentVersions", {
+      documentId, sourceStorageId, sha256: "9".repeat(64), mime: "image/png", size: 16,
+      fingerprintVersion: FINGERPRINT_VERSION, coarseFingerprint: "unrelated", createdAt: FIXTURE_TIME + 10,
+    });
+    const issuanceId = await ctx.db.insert("issuances", {
+      orgId: original.orgId, versionId, userId: original.userId, traceHandle: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      wmCode: 99, profileId: PROFILE_ID, derivedStorageId, status: "ready", issuedAt: FIXTURE_TIME + 10,
+    });
+    const jobId = await ctx.db.insert("jobs", {
+      orgId: original.orgId, jobKey: "seeded-unrelated-candidate", type: "personalize", inputStorageId: sourceStorageId,
+      issuanceId, profileId: PROFILE_ID, state: "succeeded", workerClass: "cpu", nextAttemptAt: FIXTURE_TIME,
+      attempts: 1, result: { outputSha256: "f".repeat(64), fingerprint: {
+        fingerprintVersion: "perceptual-v1", sha256: "f".repeat(64), mimeType: "image/png",
+        dHash: "fedcba9876543210", width: 640, height: 480,
+      } }, createdAt: FIXTURE_TIME + 10, updatedAt: FIXTURE_TIME + 10,
+    });
+    await ctx.db.patch(issuanceId, { jobId });
+    return { documentId, issuanceId };
   });
 }
 
@@ -261,6 +298,42 @@ describe("trace case handlers", () => {
     ))).rejects.toThrow("TRACE_CANDIDATE_SNAPSHOT_MISMATCH");
   });
 
+  it("freezes an authorized document binding and scopes issuance candidates to its versions", async () => {
+    const t = convexTest(schema, modules);
+    const seed = await seedTraceFixture(t);
+    const unrelated = await seedUnrelatedReadyIssuance(t, seed);
+    const investigator = t.withIdentity({ subject: "integration-investigator", email: "investigator@integration.invalid" });
+
+    // No selection retains the existing organization/profile candidate scope.
+    const unscopedCaseId = await investigator.mutation(api.traceCases.create, {
+      evidenceStorageId: seed.caseEvidenceStorageId, evidenceSha256: "c".repeat(64), evidenceMime: "image/png",
+      profileId: PROFILE_ID, protocolVersion: PROTOCOL_VERSION, detectorVersion: DETECTOR_VERSION,
+      fingerprintVersion: FINGERPRINT_VERSION,
+    });
+    const unscopedJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === unscopedCaseId));
+    expect(unscopedJob?.traceContentBinding).toBeUndefined();
+    expect(unscopedJob?.traceCandidateSnapshot?.map((candidate) => candidate.issuanceId).sort()).toEqual([
+      seed.candidateIssuanceId,
+      unrelated.issuanceId,
+    ].sort());
+
+    const caseId = await investigator.mutation(api.traceCases.create, {
+      evidenceStorageId: seed.caseEvidenceStorageId, evidenceSha256: "d".repeat(64), evidenceMime: "image/png",
+      profileId: PROFILE_ID, suspectedDocumentId: seed.documentId, protocolVersion: PROTOCOL_VERSION,
+      detectorVersion: DETECTOR_VERSION, fingerprintVersion: FINGERPRINT_VERSION,
+    });
+    const traceJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === caseId));
+    expect(traceJob).toBeDefined();
+    expect(traceJob?.traceContentBinding).toEqual({ documentId: seed.documentId });
+    expect(JSON.stringify(traceJob?.traceContentBinding)).not.toContain("integration-recipient");
+    expect(JSON.stringify(traceJob?.traceContentBinding)).not.toContain("@integration.invalid");
+    expect(traceJob?.traceCandidateSnapshot).toHaveLength(1);
+    expect(traceJob?.traceCandidateSnapshot?.[0]).toMatchObject({
+      scope: "issuance", issuanceId: seed.candidateIssuanceId, traceHandle: SNAPSHOTTED_TRACE_HANDLE,
+    });
+    expect(traceJob?.traceCandidateSnapshot?.some((candidate) => candidate.issuanceId === unrelated.issuanceId)).toBe(false);
+  });
+
   it("enforces screen ranks through the live candidate-recording handler", async () => {
     const t = convexTest(schema, modules);
     const seed = await seedScreenTraceFixture(t);
@@ -317,6 +390,36 @@ describe("trace case handlers", () => {
     await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
       caseId, traceJob!._id, SCREEN_TRACE_HANDLE, { webSessionId: seed.webSessionId }, 3, "insufficient",
     ))).rejects.toThrow("SCREEN_CANDIDATE_RANK_LIMIT");
+  });
+
+  it("excludes unbound web sessions when an authorized document is selected for a screen trace", async () => {
+    const t = convexTest(schema, modules);
+    const seed = await seedScreenTraceFixture(t);
+    const investigator = t.withIdentity({ subject: "screen-integration-investigator" });
+    const caseId = await investigator.mutation(api.traceCases.create, {
+      evidenceStorageId: seed.caseEvidenceStorageId, evidenceSha256: "e".repeat(64), evidenceMime: "image/png",
+      profileId: SCREEN_PROFILE_ID, suspectedDocumentId: seed.documentId, protocolVersion: PROTOCOL_VERSION,
+      detectorVersion: DETECTOR_VERSION, fingerprintVersion: FINGERPRINT_VERSION,
+    });
+    const traceJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === caseId));
+    expect(traceJob?.traceContentBinding).toEqual({ documentId: seed.documentId });
+    expect(traceJob?.traceCandidateSnapshot).toEqual([{
+      traceHandle: SCREEN_ISSUANCE_TRACE_HANDLE, scope: "issuance", createdAt: FIXTURE_TIME + 1,
+      issuanceId: seed.issuanceId, outputSha256: SCREEN_OUTPUT_SHA256,
+    }]);
+
+    const claimed = await t.mutation(api.jobs.claim, {
+      workerToken: WORKER_TOKEN, workerId: "screen-document-binding-worker", capabilities: ["cpu"],
+    });
+    expect(claimed?.jobId).toEqual(traceJob?._id);
+    await t.mutation(api.jobs.start, {
+      workerToken: WORKER_TOKEN, workerId: "screen-document-binding-worker", jobId: traceJob!._id,
+    });
+    const input = await t.mutation(api.jobs.getWorkerInput, {
+      workerToken: WORKER_TOKEN, workerId: "screen-document-binding-worker", jobId: traceJob!._id,
+    });
+    expect(input.candidates).toEqual(traceJob?.traceCandidateSnapshot);
+    expect(input.candidates.some((candidate) => candidate.webSessionId === seed.webSessionId)).toBe(false);
   });
 
   it("withholds a clear screen pattern attribution until immutable content matching exists", async () => {
