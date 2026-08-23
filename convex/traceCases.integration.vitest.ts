@@ -15,7 +15,11 @@ const CARRIER_VERSION = "carrier-integration-v1";
 const KEY_VERSION = "key-integration-v1";
 const SNAPSHOTTED_TRACE_HANDLE = "0123456789abcdef0123456789abcdef";
 const OUT_OF_SNAPSHOT_TRACE_HANDLE = "fedcba9876543210fedcba9876543210";
+const SCREEN_PROFILE_ID = "screen-profile-integration-v1";
+const SCREEN_TRACE_HANDLE = "00112233445566778899aabbccddeeff";
 const OUTPUT_SHA256 = "a".repeat(64);
+const FIXTURE_TIME = 1_725_000_000_000;
+const FIXTURE_EXPIRY = 4_000_000_000_000;
 
 process.env.WORKER_TOKEN = WORKER_TOKEN;
 
@@ -31,12 +35,17 @@ type Seed = {
   outOfSnapshotIssuanceId: any;
 };
 
+type ScreenSeed = {
+  caseEvidenceStorageId: any;
+  webSessionId: any;
+};
+
 async function seedTraceFixture(t: ReturnType<typeof convexTest>): Promise<Seed> {
   return t.run(async (ctx) => {
     const sourceStorageId = await ctx.storage.store(new Blob(["source"]));
     const derivedStorageId = await ctx.storage.store(new Blob(["derived"]));
     const caseEvidenceStorageId = await ctx.storage.store(new Blob(["evidence"]));
-    const now = 1_725_000_000_000;
+    const now = FIXTURE_TIME;
     const orgId = await ctx.db.insert("organizations", {
       name: "Integration Organization", slug: "integration-organization", createdAt: now,
     });
@@ -74,6 +83,35 @@ async function seedTraceFixture(t: ReturnType<typeof convexTest>): Promise<Seed>
   });
 }
 
+async function seedScreenTraceFixture(t: ReturnType<typeof convexTest>): Promise<ScreenSeed> {
+  return t.run(async (ctx) => {
+    const caseEvidenceStorageId = await ctx.storage.store(new Blob(["screen evidence"]));
+    const tileStorageId = await ctx.storage.store(new Blob(["screen tile"]));
+    const orgId = await ctx.db.insert("organizations", {
+      name: "Screen Integration Organization", slug: "screen-integration-organization", createdAt: FIXTURE_TIME,
+    });
+    await ctx.db.insert("users", {
+      orgId, authSubject: "screen-integration-investigator", displayName: "Screen Investigator",
+      email: "screen-investigator@fixture.invalid", role: "investigator", status: "active", createdAt: FIXTURE_TIME,
+    });
+    const recipientId = await ctx.db.insert("users", {
+      orgId, authSubject: "screen-integration-recipient", displayName: "Screen Recipient",
+      email: "screen-recipient@fixture.invalid", role: "viewer", status: "active", createdAt: FIXTURE_TIME,
+    });
+    await ctx.db.insert("watermarkProfiles", {
+      profileId: SCREEN_PROFILE_ID, carrier: "screen", protocolVersion: PROTOCOL_VERSION, profileVersion: PROFILE_VERSION,
+      carrierVersion: CARRIER_VERSION, detectorVersion: DETECTOR_VERSION, strength: 0.5, keyVersion: KEY_VERSION,
+      thresholds: { minimumConfidence: 0.8, minimumMargin: 0.1 }, status: "active", createdAt: FIXTURE_TIME,
+    });
+    const webSessionId = await ctx.db.insert("webSessions", {
+      orgId, userId: recipientId, traceHandle: SCREEN_TRACE_HANDLE, routeScope: "/screen-integration",
+      profileId: SCREEN_PROFILE_ID, epoch: 1, startedAt: FIXTURE_TIME, expiresAt: FIXTURE_EXPIRY,
+      lastSeenAt: FIXTURE_TIME, tileStorageId,
+    });
+    return { caseEvidenceStorageId, webSessionId };
+  });
+}
+
 function candidateArgs(caseId: any, jobId: any, issuanceId: any, traceHandle: string) {
   return {
     workerToken: WORKER_TOKEN, workerId: "integration-worker", jobId, caseId, traceHandle, issuanceId,
@@ -83,6 +121,26 @@ function candidateArgs(caseId: any, jobId: any, issuanceId: any, traceHandle: st
     protocolVersion: PROTOCOL_VERSION, profileVersion: PROFILE_VERSION, carrierVersion: CARRIER_VERSION,
     detectorVersion: DETECTOR_VERSION, fingerprintVersion: FINGERPRINT_VERSION, keyVersion: KEY_VERSION,
     workerVersion: "worker-integration-v1",
+  };
+}
+
+function screenCandidateArgs(
+  caseId: any,
+  jobId: any,
+  webSessionId: any,
+  rank: number,
+  requestedDecision: "attributed" | "insufficient",
+) {
+  return {
+    workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId, caseId,
+    traceHandle: SCREEN_TRACE_HANDLE, webSessionId,
+    watermarkScore: 0.95, watermarkMargin: 0.2, fingerprintScore: 0.9, geometricScore: 0.8,
+    structureScore: 0.7, timelineScore: 0.6, finalConfidence: 0.95, requestedDecision,
+    explanation: "Raw screen correlation evidence supported this candidate.",
+    rawEvidence: { correlationPeak: 0.95, phase: 4 }, rank,
+    protocolVersion: PROTOCOL_VERSION, profileVersion: PROFILE_VERSION, carrierVersion: CARRIER_VERSION,
+    detectorVersion: DETECTOR_VERSION, fingerprintVersion: FINGERPRINT_VERSION, keyVersion: KEY_VERSION,
+    workerVersion: "screen-worker-integration-v1",
   };
 }
 
@@ -137,5 +195,47 @@ describe("trace case handlers", () => {
     await expect(t.mutation(api.traceCases.recordCandidate, candidateArgs(
       caseId, traceJob!._id, outOfSnapshotIssuanceId, OUT_OF_SNAPSHOT_TRACE_HANDLE,
     ))).rejects.toThrow("TRACE_CANDIDATE_SNAPSHOT_MISMATCH");
+  });
+
+  it("enforces screen ranks through the live candidate-recording handler", async () => {
+    const t = convexTest(schema, modules);
+    const seed = await seedScreenTraceFixture(t);
+    const investigator = t.withIdentity({ subject: "screen-integration-investigator" });
+
+    const caseId = await investigator.mutation(api.traceCases.create, {
+      evidenceStorageId: seed.caseEvidenceStorageId, evidenceSha256: "d".repeat(64), evidenceMime: "image/png",
+      profileId: SCREEN_PROFILE_ID, protocolVersion: PROTOCOL_VERSION, detectorVersion: DETECTOR_VERSION,
+      fingerprintVersion: FINGERPRINT_VERSION,
+    });
+    const traceJob = await t.run(async (ctx) => (await ctx.db.query("jobs").collect()).find((job) => job.caseId === caseId));
+    expect(traceJob).toBeDefined();
+
+    const claimed = await t.mutation(api.jobs.claim, {
+      workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", capabilities: ["cpu"],
+    });
+    expect(claimed?.jobId).toEqual(traceJob!._id);
+    await t.mutation(api.jobs.start, {
+      workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId: traceJob!._id,
+    });
+    const input = await t.mutation(api.jobs.getWorkerInput, {
+      workerToken: WORKER_TOKEN, workerId: "screen-integration-worker", jobId: traceJob!._id,
+    });
+    expect(input.candidates).toEqual([{
+      traceHandle: SCREEN_TRACE_HANDLE, scope: "web_session", createdAt: FIXTURE_TIME,
+      webSessionId: seed.webSessionId,
+    }]);
+
+    await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
+      caseId, traceJob!._id, seed.webSessionId, 1, "insufficient",
+    ))).resolves.toMatchObject({ decision: "insufficient" });
+    await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
+      caseId, traceJob!._id, seed.webSessionId, 2, "insufficient",
+    ))).resolves.toMatchObject({ decision: "insufficient" });
+    await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
+      caseId, traceJob!._id, seed.webSessionId, 2, "attributed",
+    ))).rejects.toThrow("SCREEN_RUNNER_UP_ATTRIBUTION_FORBIDDEN");
+    await expect(t.mutation(api.traceCases.recordCandidate, screenCandidateArgs(
+      caseId, traceJob!._id, seed.webSessionId, 3, "insufficient",
+    ))).rejects.toThrow("SCREEN_CANDIDATE_RANK_LIMIT");
   });
 });
