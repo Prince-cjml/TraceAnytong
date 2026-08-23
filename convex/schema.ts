@@ -52,7 +52,8 @@ export default defineSchema({
     issuedAt: v.number(), downloadedAt: v.optional(v.number()),
   }).index("by_traceHandle", ["traceHandle"]).index("by_wmCode", ["wmCode"])
     .index("by_version_user", ["versionId", "userId"]).index("by_version_time", ["versionId", "issuedAt"])
-    .index("by_org_profile", ["orgId", "profileId"]),
+    .index("by_org_profile", ["orgId", "profileId"])
+    .index("by_org_profile_status", ["orgId", "profileId", "status"]),
   webSessions: defineTable({
     orgId: v.id("organizations"), userId: v.id("users"), traceHandle: v.string(), routeScope: v.string(), profileId: v.string(),
     epoch: v.number(), startedAt: v.number(), expiresAt: v.number(), lastSeenAt: v.number(), tileStorageId: v.optional(v.id("_storage")),
@@ -63,6 +64,13 @@ export default defineSchema({
     orgId: v.id("organizations"), jobKey: v.string(), type: v.string(), inputStorageId: v.optional(v.id("_storage")),
     outputStorageId: v.optional(v.id("_storage")), issuanceId: v.optional(v.id("issuances")), caseId: v.optional(v.id("traceCases")), webSessionId: v.optional(v.id("webSessions")),
     profileId: v.string(), state: jobState, workerClass: v.union(v.literal("cpu"), v.literal("gpu"), v.literal("hybrid")),
+    // Immutable server-resolved bindings for trace jobs. It never contains
+    // recipient data, URLs, profile keys, or other secret material.
+    traceCandidateSnapshot: v.optional(v.array(v.object({
+      traceHandle: v.string(), scope: v.union(v.literal("issuance"), v.literal("web_session")), createdAt: v.number(),
+      issuanceId: v.optional(v.id("issuances")), webSessionId: v.optional(v.id("webSessions")),
+      wmCode: v.optional(v.number()), outputSha256: v.optional(v.string()),
+    }))),
     leaseOwner: v.optional(v.string()), leaseExpiresAt: v.optional(v.number()), nextAttemptAt: v.number(), attempts: v.number(),
     lastError: v.optional(v.string()), result: v.optional(v.any()), createdAt: v.number(), updatedAt: v.number(),
   }).index("by_jobKey", ["jobKey"]).index("by_webSessionId", ["webSessionId"]).index("by_state_nextAttemptAt", ["state", "nextAttemptAt"])
