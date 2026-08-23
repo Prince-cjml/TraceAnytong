@@ -25,6 +25,12 @@ const MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 const SUPPORTED_MIME_TYPES = new Set(Object.values(MIME_BY_EXTENSION));
+const IMAGE_PERSONALIZATION_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const SCREEN_PERSONALIZATION_MIME_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+]);
 
 /**
  * Maps browser-provided file metadata onto an adapter-supported artifact.
@@ -51,6 +57,17 @@ export function documentIntakeDescriptor(file: IntakeFile) {
 
 export function hasExplicitRecipientReference(value: string) {
   return value.trim().length > 0;
+}
+
+/** UI-only compatibility hint; Convex repeats and enforces this check before queueing. */
+export function isProfileCompatibleWithSourceMime(profile: ActiveProfile, mime: string) {
+  if (IMAGE_PERSONALIZATION_MIME_TYPES.has(mime)) return profile.carrier === "image";
+  if (SCREEN_PERSONALIZATION_MIME_TYPES.has(mime)) return profile.carrier === "screen";
+  return false;
+}
+
+export function compatibleProfilesForSourceMime(profiles: readonly ActiveProfile[], mime: string) {
+  return profiles.filter((profile) => isProfileCompatibleWithSourceMime(profile, mime));
 }
 
 async function sha256Hex(file: File): Promise<string> {
@@ -82,9 +99,17 @@ export function DocumentIntake({ onCreated }: DocumentIntakeProps) {
   const [phase, setPhase] = useState<"idle" | "hashing" | "uploading" | "preserving" | "issuing" | "complete" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const descriptor = useMemo(() => file ? documentIntakeDescriptor(file) : null, [file]);
-  const selectedProfile = useMemo(() => profiles?.find((profile) => profile.profileId === profileId) ?? profiles?.[0], [profileId, profiles]);
+  const compatibleProfiles = useMemo(
+    () => descriptor && profiles ? compatibleProfilesForSourceMime(profiles, descriptor.mime) : undefined,
+    [descriptor, profiles],
+  );
+  const selectedProfile = useMemo(
+    () => compatibleProfiles?.find((profile) => profile.profileId === profileId) ?? compatibleProfiles?.[0],
+    [compatibleProfiles, profileId],
+  );
   const wantsIssuance = hasExplicitRecipientReference(recipientUserId);
   const busy = ["hashing", "uploading", "preserving", "issuing"].includes(phase);
+  const noCompatibleProfile = wantsIssuance && descriptor !== null && profiles !== undefined && compatibleProfiles?.length === 0;
 
   const selectFile = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0] ?? null;
@@ -180,13 +205,15 @@ export function DocumentIntake({ onCreated }: DocumentIntakeProps) {
         </select>
       </label>
       {wantsIssuance && <label>Watermark profile
-        <select value={selectedProfile?.profileId ?? ""} onChange={(event) => setProfileId(event.target.value)} disabled={busy || !profiles}>
-          {profiles?.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.profileId} · {profile.carrier}</option>)}
+        <select value={selectedProfile?.profileId ?? ""} onChange={(event) => setProfileId(event.target.value)} disabled={busy || !descriptor || !profiles || compatibleProfiles?.length === 0}>
+          {!compatibleProfiles?.length && <option value="">No compatible active profile</option>}
+          {compatibleProfiles?.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.profileId} · {profile.carrier}</option>)}
         </select>
       </label>}
     </fieldset>
     {phaseCopy[phase] && <p className="upload-status" role="status">{phaseCopy[phase]}</p>}
     {error && <p className="upload-error" role="alert">{error}</p>}
+    {noCompatibleProfile && <p className="upload-error" role="alert">No active watermark profile can issue a native protected copy of this source type. You can still preserve the source without a recipient.</p>}
     <button className="primary" type="button" onClick={submit} disabled={!descriptor || busy || (wantsIssuance && !selectedProfile)}>
       {busy ? "Preserving…" : wantsIssuance ? "Preserve and issue copy" : "Preserve immutable source"} <span>→</span>
     </button>

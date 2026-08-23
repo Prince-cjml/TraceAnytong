@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requireRole, randomTraceHandle, sameOrganization } from "./auth";
 import { writeAuditEvent } from "./audit";
-import { assertRecipientIsActive } from "./issuanceRules";
+import { assertPersonalizationCompatibility, assertRecipientIsActive } from "./issuanceRules";
 
 async function sha256Hex(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
@@ -38,6 +38,11 @@ export const create = mutation({
     const document = await ctx.db.get(version.documentId);
     if (!document) throw new Error("NOT_FOUND");
     sameOrganization(document.orgId, actor);
+    assertPersonalizationCompatibility({
+      sourceMime: version.mime,
+      outputFormat: args.outputFormat,
+      carrier: profile.carrier,
+    });
 
     const traceHandle = randomTraceHandle();
     // Only the image carrier receives a model-sized code. The trace handle remains 128-bit for every carrier.

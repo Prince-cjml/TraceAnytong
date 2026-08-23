@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { documentIntakeDescriptor, hasExplicitRecipientReference } from "./document-intake";
+import {
+  compatibleProfilesForSourceMime,
+  documentIntakeDescriptor,
+  hasExplicitRecipientReference,
+  isProfileCompatibleWithSourceMime,
+} from "./document-intake";
 
 describe("document intake descriptor", () => {
   it("maps supported native sources to an immutable-preserving output format", () => {
@@ -24,5 +29,26 @@ describe("protected-copy guard", () => {
     expect(hasExplicitRecipientReference("")).toBe(false);
     expect(hasExplicitRecipientReference("   ")).toBe(false);
     expect(hasExplicitRecipientReference("k5716bhsjqm7194jeqhbg9gk1h8czxvy")).toBe(true);
+  });
+
+  it("only offers the carrier implemented for the selected native source", () => {
+    const profiles = [
+      { profileId: "image-v1", carrier: "image" as const, profileVersion: "1" },
+      { profileId: "screen-v1", carrier: "screen" as const, profileVersion: "1" },
+      { profileId: "structure-v1", carrier: "structure" as const, profileVersion: "1" },
+    ];
+
+    expect(isProfileCompatibleWithSourceMime(profiles[0], "image/jpeg")).toBe(true);
+    expect(isProfileCompatibleWithSourceMime(profiles[1], "image/jpeg")).toBe(false);
+    expect(compatibleProfilesForSourceMime(profiles, "image/png").map((profile) => profile.profileId)).toEqual(["image-v1"]);
+    expect(compatibleProfilesForSourceMime(profiles, "application/pdf").map((profile) => profile.profileId)).toEqual(["screen-v1"]);
+    expect(compatibleProfilesForSourceMime(profiles, "application/vnd.openxmlformats-officedocument.wordprocessingml.document").map((profile) => profile.profileId)).toEqual(["screen-v1"]);
+    expect(compatibleProfilesForSourceMime(profiles, "application/vnd.openxmlformats-officedocument.presentationml.presentation").map((profile) => profile.profileId)).toEqual(["screen-v1"]);
+  });
+
+  it("does not treat detector-only or unknown artifact profiles as issuable", () => {
+    const profiles = [{ profileId: "structure-v1", carrier: "structure" as const, profileVersion: "1" }];
+    expect(compatibleProfilesForSourceMime(profiles, "application/pdf")).toEqual([]);
+    expect(compatibleProfilesForSourceMime(profiles, "text/plain")).toEqual([]);
   });
 });
