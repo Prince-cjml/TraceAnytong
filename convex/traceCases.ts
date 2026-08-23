@@ -5,7 +5,7 @@ import { writeAuditEvent } from "./audit";
 import { requireWorker } from "./workerAuth";
 import { assertEvidenceScores, assertRawEvidence, assertTraceHandle, parseTraceThresholds, resolveTraceDecision } from "./traceDecisionRules";
 import { leaseIsActive } from "./jobRules";
-import { assertSupportedArtifactMime } from "./artifactRules";
+import { assertSupportedArtifactMime, assertTraceProfileCompatibility } from "./artifactRules";
 import { assertCandidateProfileMatchesTraceJob } from "./traceCaseRules";
 import {
   assertCandidateInTraceSnapshot,
@@ -143,6 +143,7 @@ export const create = mutation({
     const profile = await ctx.db.query("watermarkProfiles").withIndex("by_profileId", (q) => q.eq("profileId", args.profileId)).unique();
     if (!profile || profile.status !== "active") throw new Error("INVALID_PROFILE");
     if (profile.protocolVersion !== args.protocolVersion) throw new Error("PROFILE_PROTOCOL_MISMATCH");
+    assertTraceProfileCompatibility(args.evidenceMime, profile.carrier);
     const now = Date.now();
     const traceCandidateSnapshot = await createTraceCandidateSnapshot(ctx, reporter.orgId, profile, now);
     const { profileId: _profileId, ...caseArgs } = args;

@@ -178,6 +178,19 @@ function screenCandidateArgs(
 }
 
 describe("trace case handlers", () => {
+  it("rejects a profile that cannot inspect the immutable evidence before queueing a trace job", async () => {
+    const t = convexTest(schema, modules);
+    const seed = await seedTraceFixture(t);
+    const investigator = t.withIdentity({ subject: "integration-investigator", email: "investigator@integration.invalid" });
+
+    await expect(investigator.mutation(api.traceCases.create, {
+      evidenceStorageId: seed.caseEvidenceStorageId, evidenceSha256: "c".repeat(64), evidenceMime: "application/pdf",
+      profileId: PROFILE_ID, protocolVersion: PROTOCOL_VERSION, detectorVersion: DETECTOR_VERSION,
+      fingerprintVersion: FINGERPRINT_VERSION,
+    })).rejects.toThrow("TRACE_PROFILE_MIME_MISMATCH");
+    await expect(t.run(async (ctx) => ctx.db.query("jobs").collect())).resolves.toHaveLength(1);
+  });
+
   it("freezes anonymous candidate bindings for a live leased trace job", async () => {
     const t = convexTest(schema, modules);
     const seed = await seedTraceFixture(t);
