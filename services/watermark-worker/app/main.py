@@ -186,7 +186,7 @@ async def worker_error(_: Request, exc: WorkerError) -> JSONResponse:
 
 @app.get("/healthz")
 def healthz() -> dict:
-    return {"status": "ok", "workerVersion": app.version, "imageModelVersion": "deterministic-fallback-v1", "screenDetectorVersion": ScreenTileCarrier.detector_version}
+    return {"status": "ok", "workerVersion": app.version, "imageModelVersion": "deterministic-fallback-v2", "screenDetectorVersion": ScreenTileCarrier.detector_version}
 
 
 @app.post("/v1/personalize")

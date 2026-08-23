@@ -520,7 +520,7 @@ class JobRunner:
                     "rank": 1, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
                     "carrierVersion": ImageCodeCarrier.carrier_version, "detectorVersion": evidence.detector_version,
                     "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
-                    "modelVersion": "deterministic-fallback-v1", "workerVersion": self.settings.worker_version,
+                    "modelVersion": "deterministic-fallback-v2", "workerVersion": self.settings.worker_version,
                 })
         else:
             identities: list[TraceIdentity] = []

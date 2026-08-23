@@ -6,7 +6,7 @@ def _by_scenario(report: dict) -> dict[str, dict]:
     return {item["scenario"]: item for item in report["results"]}
 
 
-def test_worker_evidence_keeps_metadata_loss_and_ambiguous_screen_unattributed(tmp_path) -> None:
+def test_worker_evidence_keeps_visual_metadata_loss_recovery_and_ambiguous_screen_unattributed(tmp_path) -> None:
     fixtures = tmp_path / "fixtures"
     generate_fixtures(fixtures)
 
@@ -16,9 +16,17 @@ def test_worker_evidence_keeps_metadata_loss_and_ambiguous_screen_unattributed(t
     assert image["rawDetectorEvidence"]["carrierEvidence"]["raw"]["wmCode"] == 0xAABBCCDD
     assert image["attribution"]["status"] == "UNMEASURED"
 
-    stripped = results["image-metadata-stripped-negative"]
-    assert stripped["rawDetectorEvidence"]["carrierEvidence"]["raw"]["recovery"] == "none"
-    assert stripped["attribution"]["status"] == "INSUFFICIENT"
+    for name in ("image-raster-metadata-stripped", "image-raster-jpeg-60", "image-raster-resize-0.75"):
+        transformed = results[name]
+        carrier = transformed["rawDetectorEvidence"]["carrierEvidence"]
+        assert carrier["raw"]["recovery"] == "visual-raster"
+        assert carrier["raw"]["wmCode"] == 0xAABBCCDD
+        assert transformed["attribution"]["status"] == "UNMEASURED"
+
+    crop_limit = results["image-raster-crop-0.5-limit"]
+    assert crop_limit["rawDetectorEvidence"]["carrierEvidence"]["raw"]["recovery"] == "none"
+    assert crop_limit["attribution"]["status"] == "INSUFFICIENT"
+    assert results["image-unwatermarked-negative"]["attribution"]["status"] == "INSUFFICIENT"
 
     matched = results["screen-candidate-matched"]["rawDetectorEvidence"]
     assert matched["crossCandidateMargin"] > 0.3

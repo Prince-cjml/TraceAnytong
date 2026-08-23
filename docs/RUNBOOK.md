@@ -18,6 +18,8 @@ For personalized files, configure carrier profiles that match the immutable sour
 
 For direct leak evidence traced with a `screen` profile, PDF pages are rendered deterministically for candidate correlation. DOCX and PPTX are not visually rendered by the worker; they return native-structure provenance support only and always remain insufficient for attribution. Use a screenshot or PDF export when visual screen-pattern correlation is required.
 
+The current image worker keeps its native metadata mapping and adds a deterministic CRC-protected visual `wmCode` fallback. It is measured on metadata-stripped images, controlled JPEG quality 60, and a 0.75 resize; it is not a neural detector and does not claim arbitrary crop, perspective, or camera recovery. A visual code is still only candidate evidence—the control plane requires the server mapping and normal fingerprint/threshold checks before attribution.
+
 ## Worker operation
 
 The production container starts `traceanytong-worker run`. It performs lease maintenance before each claim, processes successful jobs without an artificial delay, waits after idle or lease-loss outcomes, and applies exponential backoff after failed outcomes. A lease loss is recoverable and is never reported as a new failure by the daemon. After `WORKER_MAX_CONSECUTIVE_FAILURES` failed outcomes (default `5`), the process exits with status `1` so the platform can restart it instead of hot-looping.

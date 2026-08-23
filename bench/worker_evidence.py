@@ -282,14 +282,64 @@ def collect_worker_evidence(fixtures_root: Path) -> dict[str, Any]:
     decoded = Image.open(io.BytesIO(personalized_image.artifact.data)).convert("RGB")
     transcoded = io.BytesIO()
     decoded.save(transcoded, format="PNG", optimize=False)
-    absent = image_carrier.detect(Artifact(transcoded.getvalue(), _IMAGE_MIME, "metadata-stripped.png"), profile)
+    raster_recovered = image_carrier.detect(Artifact(transcoded.getvalue(), _IMAGE_MIME, "metadata-stripped.png"), profile)
     results.append(_result(
-        "image-metadata-stripped-negative",
+        "image-raster-metadata-stripped",
+        channel="image",
+        corpus="acceptance",
+        evidence=raster_recovered,
+        status="UNMEASURED",
+        reason="The repeated visual code survives metadata stripping, but a benchmark has no server-resolved wmCode-to-issuance binding.",
+    ))
+    jpeg = io.BytesIO()
+    decoded.save(jpeg, format="JPEG", quality=60, optimize=False)
+    jpeg_recovered = image_carrier.detect(Artifact(jpeg.getvalue(), "image/jpeg", "metadata-stripped-q60.jpg"), profile)
+    results.append(_result(
+        "image-raster-jpeg-60",
+        channel="image",
+        corpus="acceptance",
+        evidence=jpeg_recovered,
+        status="UNMEASURED",
+        reason="Controlled JPEG quality 60 retains measured visual-code evidence, but a benchmark has no server-resolved wmCode-to-issuance binding.",
+        extra_raw={"transform": {"name": "jpeg", "value": 60, "metadataStripped": True}},
+    ))
+    resized = decoded.resize((480, 300), Image.Resampling.LANCZOS)
+    resized_stream = io.BytesIO()
+    resized.save(resized_stream, format="PNG", optimize=False)
+    resized_recovered = image_carrier.detect(Artifact(resized_stream.getvalue(), _IMAGE_MIME, "metadata-stripped-resize-075.png"), profile)
+    results.append(_result(
+        "image-raster-resize-0.75",
+        channel="image",
+        corpus="acceptance",
+        evidence=resized_recovered,
+        status="UNMEASURED",
+        reason="Controlled 0.75 resize retains measured visual-code evidence, but a benchmark has no server-resolved wmCode-to-issuance binding.",
+        extra_raw={"transform": {"name": "resize", "value": 0.75, "metadataStripped": True}},
+    ))
+    cropped = decoded.crop((160, 100, 480, 300))
+    cropped_stream = io.BytesIO()
+    cropped.save(cropped_stream, format="PNG", optimize=False)
+    crop_insufficient = image_carrier.detect(Artifact(cropped_stream.getvalue(), _IMAGE_MIME, "metadata-stripped-crop-05.png"), profile)
+    results.append(_result(
+        "image-raster-crop-0.5-limit",
+        channel="image",
+        corpus="acceptance",
+        evidence=crop_insufficient,
+        status="INSUFFICIENT",
+        reason="A centered 50% crop of this 640x400 fixture cannot retain all repeated-grid symbols; this fallback reports insufficiency rather than guessing a wmCode.",
+        extra_raw={"transform": {"name": "crop", "value": 0.5, "metadataStripped": True}},
+    ))
+    unmarked = Image.open(fixtures_root / "negative-image-01.png").convert("RGB")
+    unmarked_stream = io.BytesIO()
+    unmarked.save(unmarked_stream, format="PNG", optimize=False)
+    unmarked_evidence = image_carrier.detect(Artifact(unmarked_stream.getvalue(), _IMAGE_MIME, "unwatermarked.png"), profile)
+    results.append(_result(
+        "image-unwatermarked-negative",
         channel="image",
         corpus="negative",
-        evidence=absent,
+        evidence=unmarked_evidence,
         status="INSUFFICIENT",
-        reason="The documented fallback decoder found no native metadata; residual raster content is not decoded by this detector.",
+        reason="An unwatermarked deterministic fixture has no CRC-valid, threshold-supported visual code.",
     ))
 
     screen_carrier = api["ScreenTileCarrier"]()
