@@ -6,7 +6,7 @@
 2. Copy `.env.example` to the relevant app/service environment file. Run `npx convex dev --once` to bind the local project, generate `convex/_generated`, and deploy the schema to the configured development deployment.
 3. Run `npm install`, then `npm run dev` for the web app.
 4. In `services/watermark-worker`, create a virtual environment and run `pip install -e '.[dev]'`. Use `traceanytong-worker run` for the continuous lease-safe worker, or `uvicorn app.main:app --reload` when developing the health and explicit HTTP trigger endpoint.
-5. Run `npx convex dev --once --typecheck enable`, `npm test`, and `pytest` in the worker before changes are merged.
+5. Run `npx convex dev --once --typecheck enable`, `npm test`, `npm run test:convex`, `npm run test:convex:handlers`, and `pytest` in the worker before changes are merged. The handler suite uses local `convex-test` fixtures only; it does not need WorkOS or deployment credentials.
 
 The CI workflow runs the UI build, workspace tests, Convex typecheck plus pure contract tests, worker tests, and deterministic benchmark matrix on every pull request.
 

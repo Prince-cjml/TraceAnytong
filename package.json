@@ -12,12 +12,16 @@
     "build": "npm run build --workspace=@traceanytong/web",
     "test": "npm run test --workspaces --if-present",
     "test:convex": "tsc --noEmit -p convex/tsconfig.json && node --experimental-strip-types --test convex/*.test.ts",
+    "test:convex:handlers": "vitest run --config convex/vitest.config.ts",
     "test:worker": "python -m pytest services/watermark-worker/tests -q",
     "bench": "python -m bench.runners.run --fixtures bench/fixtures --output bench/reports/latest"
   },
   "devDependencies": {
+    "@edge-runtime/vm": "^5.0.0",
     "@types/node": "20.19.0",
     "convex": "^1.25.4",
-    "typescript": "5.8.3"
+    "convex-test": "^0.0.41",
+    "typescript": "5.8.3",
+    "vitest": "^3.2.6"
   }
 }
