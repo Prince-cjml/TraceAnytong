@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 
+import pytest
 from PIL import Image, PngImagePlugin
 from docx import Document
 
@@ -10,7 +11,7 @@ from app.errors import InputDownloadError, LeaseLostError
 from app.execution import JobRunner, WorkerSettings
 from app.carriers.screen_tile import ScreenTileCarrier
 from app.formats.registry import AdapterRegistry
-from app.models import Artifact, CarrierProfile, TraceIdentity
+from app.models import Artifact, CarrierEvidence, CarrierProfile, TraceIdentity
 
 
 def png_bytes() -> bytes:
@@ -369,3 +370,95 @@ def test_trace_job_ranks_candidate_matched_screen_capture() -> None:
     assert client.trace_candidates[0]["watermarkScore"] >= 0.2
     assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
     assert "candidateScores" in client.trace_candidates[0]["rawEvidence"]
+
+
+def test_trace_job_retains_the_top_two_ranked_screen_candidates_with_raw_evidence() -> None:
+    trace_handle = "0123456789abcdef0123456789abcdef"
+    runner_up_handle = "fedcba9876543210fedcba9876543210"
+    source = screen_capture(trace_handle, "profile-2026-08")
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-screen-two", "trace-screen-two-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:screen-two")
+    original_input = client.input
+
+    def screen_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:screen-two", "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [
+                {"webSessionId": "sessions:runner-up", "traceHandle": runner_up_handle, "scope": "web_session", "createdAt": 1_725_000_001, "wmCode": None, "outputSha256": None},
+                {"webSessionId": "sessions:top", "traceHandle": trace_handle, "scope": "web_session", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": None},
+            ],
+        })
+        return payload
+
+    client.input = screen_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert [candidate["rank"] for candidate in client.trace_candidates] == [1, 2]
+    assert [candidate["traceHandle"] for candidate in client.trace_candidates] == [trace_handle, runner_up_handle]
+    assert client.trace_candidates[0]["watermarkScore"] > client.trace_candidates[1]["watermarkScore"]
+    assert client.trace_candidates[0]["watermarkMargin"] == (
+        client.trace_candidates[0]["watermarkScore"] - client.trace_candidates[1]["watermarkScore"]
+    )
+    assert client.trace_candidates[1]["watermarkMargin"] == 0.0
+    for candidate in client.trace_candidates:
+        raw_evidence = candidate["rawEvidence"]
+        assert raw_evidence["candidateRank"] == candidate["rank"]
+        assert raw_evidence["screenCorrelation"]["score"] == candidate["watermarkScore"]
+        assert [entry["rank"] for entry in raw_evidence["candidateScores"]] == [1, 2]
+        assert raw_evidence["candidateScores"][candidate["rank"] - 1]["traceHandle"] == candidate["traceHandle"]
+    assert client.trace_candidates[0]["requestedDecision"] == "insufficient"
+    assert client.trace_candidates[1]["requestedDecision"] == "insufficient"
+
+
+def test_trace_job_only_allows_a_clear_top_screen_candidate_to_request_attribution(monkeypatch) -> None:
+    top_handle = "0123456789abcdef0123456789abcdef"
+    runner_up_handle = "fedcba9876543210fedcba9876543210"
+    source = png_bytes()
+    env = environment()
+    env.update({
+        "WORKER_PROFILE_SCREEN_V1_SECRET_BASE64": base64.b64encode(b"deterministic-screen-key").decode(),
+        "WORKER_PROFILE_SCREEN_V1_VERSION": "profile-2026-08",
+        "WORKER_PROFILE_SCREEN_V1_TILE_SIZE": "64",
+    })
+    client = FakeClient(source)
+    client.job = ClaimedJob("jobs:trace-screen-clear", "trace-screen-clear-key", "trace", "storage:evidence", "screen-v1", 9_999_999, case_id="cases:screen-clear")
+    original_input = client.input
+
+    def screen_trace_input(worker_id: str, job_id: str) -> dict:
+        payload = original_input(worker_id, job_id)
+        payload.update({
+            "caseId": "cases:screen-clear", "profileId": "screen-v1", "profileCarrier": "screen",
+            "candidates": [
+                {"webSessionId": "sessions:runner-up", "traceHandle": runner_up_handle, "scope": "web_session", "createdAt": 1_725_000_001, "wmCode": None, "outputSha256": None},
+                {"webSessionId": "sessions:top", "traceHandle": top_handle, "scope": "web_session", "createdAt": 1_725_000_000, "wmCode": None, "outputSha256": None},
+            ],
+        })
+        return payload
+
+    def fixed_candidate_evidence(self, screenshot, identity, profile):
+        score = 0.96 if identity.trace_handle == top_handle else 0.30
+        return CarrierEvidence(
+            carrier="screen", detector_version="screen-correlation-v1", score=score,
+            raw={"margin": 0.02, "phase": {"x": 1, "y": 2}, "peak": score, "secondPeak": score - 0.02},
+            warnings=(),
+        )
+
+    monkeypatch.setattr(ScreenTileCarrier, "detect_candidate", fixed_candidate_evidence)
+    client.input = screen_trace_input  # type: ignore[method-assign]
+    outcome = runner_for(client, env).run_once()
+
+    assert outcome.status == "succeeded"
+    assert [candidate["rank"] for candidate in client.trace_candidates] == [1, 2]
+    assert [candidate["requestedDecision"] for candidate in client.trace_candidates] == ["attributed", "insufficient"]
+    assert client.trace_candidates[0]["finalConfidence"] == 0.96
+    assert client.trace_candidates[1]["finalConfidence"] == 0.0
+    assert client.trace_candidates[0]["watermarkMargin"] == pytest.approx(0.66)
+    assert client.trace_candidates[1]["explanation"].startswith("Runner-up screen candidate")

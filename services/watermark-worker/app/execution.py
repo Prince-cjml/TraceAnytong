@@ -260,23 +260,55 @@ class JobRunner:
                 if identity.scope != "web_session" or not isinstance(candidate.get("webSessionId"), str):
                     raise InputIntegrityError("screen trace candidate is missing web-session provenance")
                 scored.append((candidate, ScreenTileCarrier().detect_candidate(screenshot, identity, profile)))
-            scored.sort(key=lambda item: item[1].score, reverse=True)
-            matches = [candidate for candidate, _ in scored[:1]]
-            if scored:
-                candidate, evidence = scored[0]
-                runner_up_score = scored[1][1].score if len(scored) > 1 else 0.0
-                candidate_margin = max(0.0, evidence.score - runner_up_score)
+            # A trace case retains the strongest two candidate bindings.  Keep
+            # ties deterministic even if the control-plane candidate order
+            # changes, and preserve the full scored vector as raw evidence.
+            scored.sort(key=lambda item: (-item[1].score, item[0]["traceHandle"]))
+            ranked_scores = [
+                {
+                    "rank": rank,
+                    "traceHandle": candidate["traceHandle"],
+                    "webSessionId": candidate["webSessionId"],
+                    "score": evidence.score,
+                    "raw": evidence.raw,
+                    "warnings": list(evidence.warnings),
+                    "detectorVersion": evidence.detector_version,
+                }
+                for rank, (candidate, evidence) in enumerate(scored, start=1)
+            ]
+            retained = scored[:2]
+            matches = [candidate for candidate, _ in retained]
+            top_score = scored[0][1].score if scored else 0.0
+            runner_up_score = scored[1][1].score if len(scored) > 1 else 0.0
+            top_candidate_margin = max(0.0, top_score - runner_up_score)
+            for rank, (candidate, evidence) in enumerate(retained, start=1):
+                is_top_candidate = rank == 1
                 phase_margin = float(evidence.raw["margin"])
-                is_clear = evidence.score >= 0.9 and candidate_margin >= 0.05 and phase_margin >= 0.01
+                is_clear = (
+                    is_top_candidate
+                    and evidence.score >= 0.9
+                    and top_candidate_margin >= 0.05
+                    and phase_margin >= 0.01
+                )
+                raw_evidence = {
+                    "screenCorrelation": asdict(evidence),
+                    "candidateRank": rank,
+                    "candidateScores": ranked_scores,
+                    "evidenceSha256": actual_sha,
+                }
+                # Retain the original top-level key for existing evidence
+                # consumers while giving every retained rank its own evidence.
+                if is_top_candidate:
+                    raw_evidence["topScreenCorrelation"] = asdict(evidence)
                 self.client.record_trace_candidate(self.settings.worker_id, job.job_id, {
                     "caseId": case_id, "traceHandle": candidate["traceHandle"], "webSessionId": candidate["webSessionId"],
-                    "watermarkScore": evidence.score, "watermarkMargin": candidate_margin, "fingerprintScore": 0.0,
+                    "watermarkScore": evidence.score, "watermarkMargin": top_candidate_margin if is_top_candidate else 0.0, "fingerprintScore": 0.0,
                     "geometricScore": 0.0, "structureScore": 0.0, "timelineScore": 1.0,
                     "finalConfidence": evidence.score if is_clear else 0.0,
                     "requestedDecision": "attributed" if is_clear else "insufficient",
-                    "explanation": "Candidate-matched screen pattern has a clear correlation peak and separation." if is_clear else "Screen pattern correlation is ambiguous or insufficiently separated from other session candidates.",
-                    "rawEvidence": {"topScreenCorrelation": asdict(evidence), "candidateScores": [{"traceHandle": entry[0]["traceHandle"], "score": entry[1].score, "raw": entry[1].raw} for entry in scored], "evidenceSha256": actual_sha},
-                    "rank": 1, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
+                    "explanation": "Candidate-matched screen pattern has a clear correlation peak and separation." if is_clear else ("Runner-up screen candidate is retained for explainability and is never eligible for attribution." if not is_top_candidate else "Screen pattern correlation is ambiguous or insufficiently separated from other session candidates."),
+                    "rawEvidence": raw_evidence,
+                    "rank": rank, "protocolVersion": "0.1", "profileVersion": profile.profile_version,
                     "carrierVersion": profile.carrier_version, "detectorVersion": evidence.detector_version,
                     "fingerprintVersion": "sha256-v1", "keyVersion": profile.key_version,
                     "workerVersion": self.settings.worker_version,
